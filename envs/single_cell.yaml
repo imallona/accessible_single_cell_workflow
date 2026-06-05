@@ -1,0 +1,11 @@
+name: single_cell
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base=4.5.3
+  - r-seurat=5.5.0
+  - bioconductor-scran=1.38.0
+  - bioconductor-singlecellexperiment=1.32.0
+  - quarto=1.9.38
+  - r-knitr=1.51

@@ -1,0 +1,7 @@
+# the example data origin
+url: "https://cf.10xgenomics.com/samples/cell/pbmc3k/pbmc3k_filtered_gene_bc_matrices.tar.gz"
+data_dir: "data"
+reports_dir: "reports"
+results_dir: "results"
+log_dir: "logs"
+matrix_subdir: "filtered_gene_bc_matrices/hg19"

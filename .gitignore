@@ -1,0 +1,24 @@
+# downloaded data
+/data/
+
+# knitted reports
+/results/
+
+# rule logs
+/logs/
+
+# snakemake working directory
+/.snakemake/
+
+# quarto intermediates
+/reports/*_files/
+/reports/*.html
+.quarto/
+
+# conda envs created by snakemake --use-conda
+/.snakemake/conda/
+
+# R session leftovers
+.Rhistory
+.RData
+.Rproj.user/
