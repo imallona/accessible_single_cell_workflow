@@ -42,6 +42,15 @@ quarto preview reports/pbmc3k_acc.qmd
 python -m http.server   # then open http://localhost:8000/reports/pbmc3k_acc.html
 ```
 
+### Accessibility tweaks
+
+Some style choices in this report are there for accessibility.
+
+- Link colour. `reports/custom.scss` sets links to a dark blue (about 7:1 on white), high contrast.
+- Wrapped output. Long code output and messages are wrapped instead of put in a horizontal scroll boxes. A scroll box needs a mouse to reach, and a screen reader gives no sign that content continues off-screen.
+- Named table columns. The tables carry the row identifier, a cell or a gene, in a named column. A data frame printed with row names leaves the first header blank, which a screen reader reads as an unlabelled column.
+- Long tables are avoided.
+
 ## License
 
 MIT, see `LICENSE`.

@@ -5,7 +5,7 @@ lang: en
 
 format:
   html:
-    theme: united
+    theme: [united, custom.scss]
     toc: true
     toc-depth: 3
     number-sections: true
@@ -178,7 +178,8 @@ if (utils::packageVersion("Seurat") < "5.0.0") {
 options(
   crayon.enabled = FALSE,
   cli.num_colors = 1,
-  width = 100
+  # keep printed output narrow so it fits the report column without a scroll box
+  width = 80
 )
 Sys.setenv(NO_COLOR = "1")
 
@@ -723,7 +724,9 @@ pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
 #| label: 02-show-qc-metadata
 
 # Show QC metrics for the first five cells.
-head(pbmc@meta.data, 5)
+# name the row-identifier column so the table header is not blank
+head(data.frame(cell_id = rownames(pbmc@meta.data), pbmc@meta.data,
+                row.names = NULL, check.names = FALSE), 5)
 ```
 
 ```{r}
@@ -1700,7 +1703,8 @@ linked from the table captions.
 
 # Find all markers of cluster 2.
 cluster2.markers <- FindMarkers(pbmc, ident.1 = 2)
-head(cluster2.markers, n = 5)
+head(data.frame(gene = rownames(cluster2.markers), cluster2.markers,
+                row.names = NULL, check.names = FALSE), 5)
 
 # Find markers distinguishing cluster 5 from clusters 0 and 3.
 cluster5.markers <- FindMarkers(
@@ -1708,7 +1712,8 @@ cluster5.markers <- FindMarkers(
   ident.1 = 5,
   ident.2 = c(0, 3)
 )
-head(cluster5.markers, n = 5)
+head(data.frame(gene = rownames(cluster5.markers), cluster5.markers,
+                row.names = NULL, check.names = FALSE), 5)
 
 # Find markers for every cluster compared with all remaining cells.
 pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE)

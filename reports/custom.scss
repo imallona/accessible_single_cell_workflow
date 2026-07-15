@@ -1,0 +1,22 @@
+/*-- scss:defaults --*/
+
+// united's orange links are ~3.4:1 on white (WCAG 2 AA needs 4.5:1); dark blue is ~7:1 and passes.
+$link-color: #0b4a9c;
+$link-hover-color: #072f63;
+
+/*-- scss:rules --*/
+
+// Bootstrap styles `pre` with `overflow: auto`, so long code output and
+// messages become a scrollable box. A scroll region that needs a mouse to
+// reach, and that a screen reader does not flag as cut off, fails the axe
+// keyboard check. Wrap the text and drop the scroll box on cell output, so the
+// whole output stays in the reading order.
+pre,
+.cell-output pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.cell-output pre {
+  overflow: visible;
+}
