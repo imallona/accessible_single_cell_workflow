@@ -1,0 +1,2703 @@
+---
+title: "Accessible Seurat PBMC 3k guided clustering tutorial"
+subtitle: "The official Seurat workflow with a screen-reader-first evidence layer"
+lang: en
+
+format:
+  html:
+    theme: united
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-overflow: wrap
+    code-copy: true
+    df-print: kable
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    axe: true
+
+execute:
+  echo: true
+  message: false
+  warning: true
+  error: false
+  freeze: false
+
+params:
+  data_dir: "../data/hg19"
+  output_dir: "../analysis/output/pbmc3k_vignette_official"
+  project_id: "pbmc3k"
+  figure_dpi: 300
+  save_pdf: true
+  save_rds: true
+---
+
+# Purpose and tutorial 
+
+This vignette reproduces the analytical sequence, marker examples, cell-type
+mapping, and displayed plot families of the current official Seurat PBMC 3k
+guided clustering tutorial. The Seurat commands that determine the scientific
+result are intentionally kept aligned with that tutorial.
+
+The accessibility layer adds structured tables, concise numerical conclusions,
+long-form descriptions, object-state checkpoints, downloadable source data, and
+explicit file links. It does not replace, reorder, or reinterpret the core
+Seurat workflow.
+
+The dataset contains one filtered PBMC sample. It supports a teaching workflow
+for quality control, normalization, dimensionality reduction, clustering,
+marker discovery, and annotation. It does not support replicate-aware
+condition-level differential expression, batch integration, pathway contrasts,
+or differential cell-cell communication.
+
+## How to navigate this vignette with a screen reader
+
+Use heading navigation to move between analytical stages. Each displayed figure
+is followed by a compact nonvisual interpretation or table. Complete source
+tables are saved as tab-separated files and linked near the relevant result.
+The long calculations used to create accessibility summaries are hidden in the
+rendered report, while the core Seurat commands remain visible.
+
+No scientific decision requires interpreting colour, point density, spatial
+position, or a heatmap by sight alone.
+
+# Before you begin
+
+## Required folder locations
+
+This QMD is designed for the following fixed arrangement:
+
+1. Store this file as `scripts/pbmc3k_acc.qmd`.
+2. Store the filtered 10x matrix files in `data/hg19`.
+3. The matrix directory must contain `matrix.mtx` or `matrix.mtx.gz`,
+   `barcodes.tsv` or `barcodes.tsv.gz`, and either `genes.tsv`,
+   `features.tsv`, or a compressed equivalent.
+4. Results are written to `analysis/output/pbmc3k_accessible_official`.
+
+The input and output paths are declared once in the YAML parameters. The
+vignette does not search for alternative project roots or silently substitute
+another directory.
+
+## Obtain the PBMC 3k data
+
+Download the filtered PBMC 3k matrix from the
+[10x Genomics source used by the Seurat tutorial](https://cf.10xgenomics.com/samples/cell/pbmc3k/pbmc3k_filtered_gene_bc_matrices.tar.gz),
+extract it, and place the contents of the `hg19` directory at the path listed
+above.
+
+## Required software
+
+The vignette targets Seurat version 5. The live official tutorial was compiled
+with Seurat 5.5.0 and is published on the Seurat 5.5.1 website. The required R
+packages are `Seurat`, `dplyr`, `ggplot2`, `patchwork`, `Matrix`, and `knitr`.
+The optional `presto` package can accelerate Wilcoxon marker testing but is not
+required.
+
+Render from the project root with:
+
+```bash
+quarto render scripts/pbmc3k_acc.qmd```
+
+For the same matrix used by the official tutorial, useful sanity checks are
+approximately 2,700 cells and 13,714 retained genes after object creation,
+2,638 cells after QC, and nine clusters at resolution 0.5. A difference is not
+automatically an error, but it should prompt inspection of the input files,
+package versions, and preceding parameters.
+
+## Short glossary
+
+| Term | Meaning in this vignette |
+|---|---|
+| PBMC | Peripheral blood mononuclear cell. |
+| UMI | Unique molecular identifier; used here as a molecule-counting unit. |
+| Feature | A measured gene. Genes are rows of the count matrix. |
+| Cell barcode | The identifier for one retained droplet or cell. Cells are columns of the count matrix. |
+| Sparse matrix | A matrix that stores nonzero values without explicitly storing every zero. |
+| QC | Quality control. |
+| Variable feature | A gene selected for high cell-to-cell variation. |
+| PC | Principal component, a weighted combination of genes. |
+| KNN | K-nearest-neighbour graph. |
+| SNN | Shared-nearest-neighbour graph used for clustering. |
+| Resolution | A clustering granularity parameter; larger values generally produce more clusters. |
+| UMAP | A two-dimensional visualization of local relationships among cells. |
+| Marker gene | A gene whose expression differs between an identity class and a comparison group. |
+| IQR | Interquartile range, from the 25th to the 75th percentile. |
+
+```{r}
+#| label: 00-setup
+#| include: false
+
+required_packages <- c(
+  "Seurat",
+  "dplyr",
+  "ggplot2",
+  "patchwork",
+  "Matrix",
+  "knitr"
+)
+
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    "Missing required R package(s): ",
+    paste(missing_packages, collapse = ", "),
+    ". Install them before rendering this vignette.",
+    call. = FALSE
+  )
+}
+
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(dplyr)
+  library(ggplot2)
+  library(patchwork)
+  library(Matrix)
+  library(knitr)
+})
+
+if (utils::packageVersion("Seurat") < "5.0.0") {
+  stop(
+    "This vignette requires Seurat version 5 or later. Installed version: ",
+    as.character(utils::packageVersion("Seurat")),
+    call. = FALSE
+  )
+}
+
+options(
+  crayon.enabled = FALSE,
+  cli.num_colors = 1,
+  width = 100
+)
+Sys.setenv(NO_COLOR = "1")
+
+# ---------------------------------------------------------------------------
+# Interactive fallback for `params`.
+#
+# When this file is rendered with `quarto render`, Quarto injects the `params`
+# object from the YAML header at the top of this document. When the chunks are
+# instead run by hand in an R console (for example, sent line by line from the
+# editor to the terminal), no `params` object exists, so this chunk fails at
+# the first use of `params$data_dir` with `object 'params' not found`, and
+# every later chunk then fails with `object '<name>' not found`.
+#
+# The block below rebuilds `params` with the SAME values as the YAML header,
+# but only when it is missing. During `quarto render` the object already
+# exists, so this block is skipped and the two execution modes stay identical.
+# ---------------------------------------------------------------------------
+if (!exists("params")) {
+  params <- list(
+    data_dir   = "../data/hg19",
+    output_dir = "../analysis/output/pbmc3k_vignette_official",
+    project_id = "pbmc3k",
+    figure_dpi = 300,
+    save_pdf   = TRUE,
+    save_rds   = TRUE
+  )
+  message(
+    "No `params` object was found, so interactive defaults from the YAML ",
+    "header were used. Current working directory: ", getwd()
+  )
+}
+
+# Fail early, and in plain language, if the input data cannot be found.
+# When running interactively the working directory must be the `scripts`
+# folder so that the relative path in `params$data_dir` resolves.
+if (!dir.exists(params$data_dir)) {
+  stop(
+    "Cannot find the input data directory '", params$data_dir, "'.\n",
+    "  Current working directory: ", getwd(), "\n",
+    "  If you are running interactively, set the working directory to the ",
+    "'scripts' folder first, for example setwd('scripts'), so that the ",
+    "relative path resolves. If you are rendering, run `quarto render` from ",
+    "the project root.",
+    call. = FALSE
+  )
+}
+
+input_dir <- normalizePath(
+  params$data_dir,
+  winslash = "/",
+  mustWork = TRUE
+)
+
+output_dir <- normalizePath(
+  params$output_dir,
+  winslash = "/",
+  mustWork = FALSE
+)
+
+table_dir <- file.path(output_dir, "tables")
+figure_png_dir <- file.path(output_dir, "figures", "png")
+figure_pdf_dir <- file.path(output_dir, "figures", "pdf")
+object_dir <- file.path(output_dir, "objects")
+log_dir <- file.path(output_dir, "logs")
+
+for (directory in c(
+  output_dir,
+  table_dir,
+  figure_png_dir,
+  object_dir,
+  log_dir
+)) {
+  dir.create(directory, recursive = TRUE, showWarnings = FALSE)
+}
+
+if (isTRUE(params$save_pdf)) {
+  dir.create(figure_pdf_dir, recursive = TRUE, showWarnings = FALSE)
+}
+
+path_for_link <- function(...) {
+  path <- file.path(params$output_dir, ...)
+  gsub("\\\\", "/", path)
+}
+
+save_tsv <- function(x, filename, rowname_column = NULL) {
+  x <- as.data.frame(x, stringsAsFactors = FALSE, check.names = FALSE)
+
+  if (!is.null(rowname_column)) {
+    if (rowname_column %in% names(x)) {
+      stop(
+        "Cannot add row names as '", rowname_column,
+        "' because that column already exists.",
+        call. = FALSE
+      )
+    }
+    x <- data.frame(
+      setNames(list(rownames(x)), rowname_column),
+      x,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  rownames(x) <- NULL
+  path <- file.path(table_dir, filename)
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+
+  utils::write.table(
+    x,
+    file = path,
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = TRUE,
+    na = "NA"
+  )
+
+  invisible(path)
+}
+
+show_table <- function(
+  x,
+  caption,
+  digits = 3,
+  link_label = NULL,
+  link_path = NULL,
+  escape = TRUE
+) {
+  table_text <- paste(
+    knitr::kable(
+      x,
+      caption = caption,
+      row.names = FALSE,
+      digits = digits,
+      escape = escape
+    ),
+    collapse = "\n"
+  )
+
+  if (!is.null(link_label) && !is.null(link_path)) {
+    table_text <- paste0(
+      table_text,
+      "\n\n[",
+      link_label,
+      "](",
+      link_path,
+      ")"
+    )
+  }
+
+  knitr::asis_output(
+    paste0("\n\n", table_text, "\n\n")
+  )
+}
+
+emit_and_save_plot <- function(plot, filename, width, height) {
+  print(plot)
+
+  ggplot2::ggsave(
+    filename = file.path(figure_png_dir, paste0(filename, ".png")),
+    plot = plot,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = params$figure_dpi,
+    bg = "white",
+    limitsize = FALSE
+  )
+
+  if (isTRUE(params$save_pdf)) {
+    ggplot2::ggsave(
+      filename = file.path(figure_pdf_dir, paste0(filename, ".pdf")),
+      plot = plot,
+      width = width,
+      height = height,
+      units = "in",
+      bg = "white",
+      limitsize = FALSE
+    )
+  }
+
+  invisible(plot)
+}
+
+save_plot_without_display <- function(plot, filename, width, height) {
+  ggplot2::ggsave(
+    filename = file.path(figure_png_dir, paste0(filename, ".png")),
+    plot = plot,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = params$figure_dpi,
+    bg = "white",
+    limitsize = FALSE
+  )
+
+  if (isTRUE(params$save_pdf)) {
+    ggplot2::ggsave(
+      filename = file.path(figure_pdf_dir, paste0(filename, ".pdf")),
+      plot = plot,
+      width = width,
+      height = height,
+      units = "in",
+      bg = "white",
+      limitsize = FALSE
+    )
+  }
+
+  invisible(plot)
+}
+
+summarise_numeric_metric <- function(values, metric, stage) {
+  data.frame(
+    stage = stage,
+    metric = metric,
+    minimum = min(values, na.rm = TRUE),
+    q25 = unname(stats::quantile(values, 0.25, na.rm = TRUE)),
+    median = stats::median(values, na.rm = TRUE),
+    q75 = unname(stats::quantile(values, 0.75, na.rm = TRUE)),
+    maximum = max(values, na.rm = TRUE),
+    stringsAsFactors = FALSE
+  )
+}
+
+object_state <- function(object, checkpoint) {
+  assay_name <- DefaultAssay(object)
+  identity_levels <- levels(Idents(object))
+
+  data.frame(
+    checkpoint = checkpoint,
+    cells = ncol(object),
+    genes = nrow(object),
+    active_assay = assay_name,
+    assay_layers = paste(Layers(object[[assay_name]]), collapse = ", "),
+    variable_features = length(VariableFeatures(object)),
+    reductions = if (length(Reductions(object)) > 0) {
+      paste(Reductions(object), collapse = ", ")
+    } else {
+      "none"
+    },
+    graphs = if (length(Graphs(object)) > 0) {
+      paste(Graphs(object), collapse = ", ")
+    } else {
+      "none"
+    },
+    identity_levels = length(identity_levels),
+    active_identities = paste(identity_levels, collapse = ", "),
+    stringsAsFactors = FALSE
+  )
+}
+
+expression_summary_by_identity <- function(object, genes, layer = "data") {
+  genes <- unique(genes)
+  genes_present <- intersect(genes, rownames(object))
+  genes_missing <- setdiff(genes, genes_present)
+
+  if (length(genes_present) == 0) {
+    stop(
+      "None of the requested expression-summary genes are present.",
+      call. = FALSE
+    )
+  }
+
+  expression_matrix <- GetAssayData(
+    object,
+    assay = DefaultAssay(object),
+    layer = layer
+  )
+
+  identities <- as.character(Idents(object))
+  identity_levels <- levels(Idents(object))
+  rows <- vector("list", length(genes_present) * length(identity_levels))
+  row_index <- 1
+
+  for (gene in genes_present) {
+    values <- as.numeric(expression_matrix[gene, ])
+
+    for (identity in identity_levels) {
+      selected <- identities == identity
+      rows[[row_index]] <- data.frame(
+        gene = gene,
+        identity = identity,
+        layer = layer,
+        cells = sum(selected),
+        average_expression = mean(values[selected]),
+        median_expression = stats::median(values[selected]),
+        percentage_detected = 100 * mean(values[selected] > 0),
+        stringsAsFactors = FALSE
+      )
+      row_index <- row_index + 1
+    }
+  }
+
+  result <- dplyr::bind_rows(rows)
+  attr(result, "missing_genes") <- genes_missing
+  result
+}
+
+parameters_used <- data.frame(
+  parameter = c(
+    "input directory",
+    "output directory",
+    "Seurat version",
+    "minimum cells per gene",
+    "minimum features per cell at object creation",
+    "QC minimum features",
+    "QC maximum features",
+    "QC maximum mitochondrial percentage",
+    "normalization method",
+    "normalization scale factor",
+    "variable features",
+    "PCA dimensions used downstream",
+    "clustering resolution",
+    "figure DPI"
+  ),
+  value = c(
+    input_dir,
+    output_dir,
+    as.character(utils::packageVersion("Seurat")),
+    "3",
+    "200",
+    "> 200",
+    "< 2500",
+    "< 5",
+    "LogNormalize",
+    "10000",
+    "2000",
+    "1:10",
+    "0.5",
+    as.character(params$figure_dpi)
+  ),
+  stringsAsFactors = FALSE
+)
+
+save_tsv(
+  parameters_used,
+  "00_parameters_used.tsv"
+)
+```
+
+# Set up the Seurat object
+
+The count matrix contains genes in rows, cell barcodes in columns, and UMI
+counts as values. A zero means that no molecule was detected for that gene in
+that cell; it does not prove biological absence.
+
+```{r}
+#| label: 01-read-and-create-object
+
+required_file_groups <- list(
+  matrix = c("matrix.mtx", "matrix.mtx.gz"),
+  barcodes = c("barcodes.tsv", "barcodes.tsv.gz"),
+  features = c(
+    "features.tsv",
+    "features.tsv.gz",
+    "genes.tsv",
+    "genes.tsv.gz"
+  )
+)
+
+missing_file_groups <- names(required_file_groups)[
+  !vapply(
+    required_file_groups,
+    function(candidates) {
+      any(file.exists(file.path(input_dir, candidates)))
+    },
+    logical(1)
+  )
+]
+
+if (length(missing_file_groups) > 0) {
+  stop(
+    "The configured input directory is missing required 10x file group(s): ",
+    paste(missing_file_groups, collapse = ", "),
+    ". Input directory: ",
+    input_dir,
+    call. = FALSE
+  )
+}
+
+# Load the PBMC dataset.
+pbmc.data <- Read10X(data.dir = input_dir)
+
+if (is.list(pbmc.data)) {
+  stop(
+    "Read10X returned multiple assays. This vignette expects one RNA count matrix.",
+    call. = FALSE
+  )
+}
+
+# Initialize the Seurat object with the raw, non-normalized data.
+pbmc <- CreateSeuratObject(
+  counts = pbmc.data,
+  project = "pbmc3k",
+  min.cells = 3,
+  min.features = 200
+)
+
+pbmc
+```
+
+```{r}
+#| label: 01-object-checkpoint
+#| echo: false
+
+initial_state <- object_state(
+  pbmc,
+  "after object creation"
+)
+
+initial_summary <- data.frame(
+  measure = c(
+    "Genes in raw matrix",
+    "Cells in raw matrix",
+    "Genes after CreateSeuratObject",
+    "Cells after CreateSeuratObject"
+  ),
+  value = c(
+    nrow(pbmc.data),
+    ncol(pbmc.data),
+    nrow(pbmc),
+    ncol(pbmc)
+  ),
+  stringsAsFactors = FALSE
+)
+
+save_tsv(
+  initial_summary,
+  "01_object_creation_summary.tsv"
+)
+
+save_tsv(
+  initial_state,
+  "01_object_state.tsv"
+)
+
+if (ncol(pbmc) != 2700 || nrow(pbmc) != 13714) {
+  warning(
+    "This object does not match the current official tutorial checkpoint of ",
+    "2,700 cells and 13,714 retained genes. Continue only if the input or ",
+    "software environment is intentionally different.",
+    call. = FALSE
+  )
+}
+
+show_table(
+  initial_state,
+  "Object-state checkpoint after Seurat object creation",
+  digits = 0,
+  link_label = "Download the object-creation summary",
+  link_path = path_for_link("tables", "01_object_creation_summary.tsv")
+)
+```
+
+**Accessible checkpoint.** The object contains **`r ncol(pbmc)` cells** and
+**`r nrow(pbmc)` genes**. Its RNA assay currently contains the raw `counts`
+layer and no dimensional reductions or neighbour graphs.
+
+## What does data in a count matrix look like?
+
+The following output is retained from the official tutorial. It shows three
+genes across the first 30 cells using the sparse-matrix display.
+
+```{r}
+#| label: 01-count-matrix-example
+
+pbmc.data[c("CD3D", "TCL1A", "MS4A1"), 1:30]
+```
+
+The period character in the sparse display represents zero. The next code also
+matches the official tutorial and temporarily creates a dense copy of the full
+matrix. For PBMC 3k this is feasible, but it should not be copied to a large
+dataset because dense allocation can exhaust memory.
+
+```{r}
+#| label: 01-sparse-versus-dense-memory
+
+dense.size <- object.size(as.matrix(pbmc.data))
+dense.size
+sparse.size <- object.size(pbmc.data)
+sparse.size
+dense.size / sparse.size
+```
+
+```{r}
+#| label: 01-count-matrix-accessible-table
+#| echo: false
+
+count_example_matrix <- as.matrix(
+  pbmc.data[c("CD3D", "TCL1A", "MS4A1"), 1:30]
+)
+
+count_example_long <- as.data.frame(
+  as.table(count_example_matrix),
+  stringsAsFactors = FALSE
+)
+names(count_example_long) <- c("gene", "cell_id", "umi_count")
+
+count_example_summary <- count_example_long |>
+  dplyr::group_by(gene) |>
+  dplyr::summarise(
+    cells_with_detected_expression = sum(umi_count > 0),
+    total_UMIs_in_first_30_cells = sum(umi_count),
+    largest_single_cell_count = max(umi_count),
+    .groups = "drop"
+  )
+
+save_tsv(
+  count_example_long,
+  "01_count_matrix_example_long.tsv"
+)
+
+show_table(
+  count_example_summary,
+  "Nonvisual summary of the three-gene count-matrix example",
+  digits = 0,
+  link_label = "Download all 90 gene-by-cell values",
+  link_path = path_for_link("tables", "01_count_matrix_example_long.tsv")
+)
+```
+
+# Standard pre-processing workflow
+
+The standard workflow filters cells using QC metrics, normalizes expression,
+selects highly variable features, scales gene expression, and performs PCA.
+
+## QC and selecting cells for further analysis
+
+The tutorial evaluates detected genes, total UMI counts, and the percentage of
+counts assigned to mitochondrial genes. Fixed thresholds are used here only to
+reproduce the PBMC 3k teaching example; they are not universal thresholds for
+other tissues, species, chemistries, or sequencing depths.
+
+```{r}
+#| label: 02-calculate-mitochondrial-percentage
+
+# Add the mitochondrial percentage to the cell-level metadata.
+pbmc[["percent.mt"]] <- PercentageFeatureSet(pbmc, pattern = "^MT-")
+```
+
+```{r}
+#| label: 02-show-qc-metadata
+
+# Show QC metrics for the first five cells.
+head(pbmc@meta.data, 5)
+```
+
+```{r}
+#| label: 02-qc-accessible-summary-before
+#| echo: false
+
+metadata_before_qc <- pbmc[[]]
+
+qc_before <- data.frame(
+  cell_id = rownames(metadata_before_qc),
+  nFeature_RNA = metadata_before_qc$nFeature_RNA,
+  nCount_RNA = metadata_before_qc$nCount_RNA,
+  percent.mt = metadata_before_qc$percent.mt,
+  stringsAsFactors = FALSE
+)
+
+qc_flags <- qc_before |>
+  dplyr::mutate(
+    fail_low_features = nFeature_RNA <= 200,
+    fail_high_features = nFeature_RNA >= 2500,
+    fail_high_mitochondrial = percent.mt >= 5,
+    keep = !fail_low_features &
+      !fail_high_features &
+      !fail_high_mitochondrial
+  )
+
+qc_distribution_before <- dplyr::bind_rows(
+  summarise_numeric_metric(
+    qc_before$nFeature_RNA,
+    "nFeature_RNA",
+    "before filtering"
+  ),
+  summarise_numeric_metric(
+    qc_before$nCount_RNA,
+    "nCount_RNA",
+    "before filtering"
+  ),
+  summarise_numeric_metric(
+    qc_before$percent.mt,
+    "percent.mt",
+    "before filtering"
+  )
+)
+
+qc_failure_summary <- data.frame(
+  criterion = c(
+    "nFeature_RNA <= 200",
+    "nFeature_RNA >= 2500",
+    "percent.mt >= 5",
+    "fails at least one criterion"
+  ),
+  cells_failing = c(
+    sum(qc_flags$fail_low_features),
+    sum(qc_flags$fail_high_features),
+    sum(qc_flags$fail_high_mitochondrial),
+    sum(!qc_flags$keep)
+  ),
+  percentage_failing = 100 * c(
+    sum(qc_flags$fail_low_features),
+    sum(qc_flags$fail_high_features),
+    sum(qc_flags$fail_high_mitochondrial),
+    sum(!qc_flags$keep)
+  ) / nrow(qc_flags),
+  stringsAsFactors = FALSE
+)
+
+save_tsv(
+  qc_before,
+  "02_qc_per_cell_before_filtering.tsv"
+)
+
+save_tsv(
+  qc_flags,
+  "02_qc_per_cell_flags.tsv"
+)
+
+save_tsv(
+  qc_distribution_before,
+  "02_qc_distribution_before_filtering.tsv"
+)
+
+save_tsv(
+  qc_failure_summary,
+  "02_qc_failure_summary.tsv"
+)
+
+show_table(
+  qc_failure_summary,
+  "Cells failing each PBMC 3k quality-control criterion",
+  digits = 2,
+  link_label = "Download complete per-cell QC flags",
+  link_path = path_for_link("tables", "02_qc_per_cell_flags.tsv")
+)
+```
+
+`CreateSeuratObject(min.features = 200)` has already removed cells with fewer
+than 200 detected genes. Therefore, the later count for the lower-feature
+criterion will normally be zero in this exact workflow.
+
+```{r}
+#| label: fig-02-qc-violin
+#| fig-cap: "Per-cell QC distributions before filtering, matching the official PBMC 3k tutorial."
+#| fig-alt: "Three violin plots show detected genes, total UMI counts, and mitochondrial percentage before filtering. Exact medians, interquartile ranges, and failure counts are reported immediately after the plots."
+#| fig-width: 13
+#| fig-height: 7
+
+qc_violin_plot <- VlnPlot(
+  pbmc,
+  features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
+  ncol = 3
+)
+
+emit_and_save_plot(
+  qc_violin_plot,
+  filename = "02_qc_violin",
+  width = 13,
+  height = 7
+)
+```
+
+```{r}
+#| label: fig-02-qc-scatter
+#| fig-cap: "Relationships among QC metrics before filtering, matching the official PBMC 3k tutorial."
+#| fig-alt: "The first scatter plot compares total UMI count with mitochondrial percentage. The second compares total UMI count with detected genes. The adjacent table gives the exact filtering thresholds and numbers of cells removed."
+#| fig-width: 13
+#| fig-height: 7
+
+plot1 <- FeatureScatter(
+  pbmc,
+  feature1 = "nCount_RNA",
+  feature2 = "percent.mt"
+)
+
+plot2 <- FeatureScatter(
+  pbmc,
+  feature1 = "nCount_RNA",
+  feature2 = "nFeature_RNA"
+)
+
+qc_scatter_plot <- plot1 + plot2
+
+emit_and_save_plot(
+  qc_scatter_plot,
+  filename = "02_qc_scatter",
+  width = 13,
+  height = 7
+)
+```
+
+### Nonvisual interpretation before filtering
+
+The dataset contains **`r nrow(qc_before)` cells** before the tutorial QC step.
+The median detected-gene count is
+**`r round(qc_distribution_before$median[qc_distribution_before$metric == "nFeature_RNA"])`**,
+with an IQR from
+**`r round(qc_distribution_before$q25[qc_distribution_before$metric == "nFeature_RNA"])`**
+to
+**`r round(qc_distribution_before$q75[qc_distribution_before$metric == "nFeature_RNA"])`**.
+The median mitochondrial percentage is
+**`r round(qc_distribution_before$median[qc_distribution_before$metric == "percent.mt"], 2)`%**.
+After accounting for overlapping criteria,
+**`r sum(!qc_flags$keep)` cells** are excluded.
+
+```{r}
+#| label: 02-apply-qc-filter
+
+pbmc <- subset(
+  pbmc,
+  subset = nFeature_RNA > 200 &
+    nFeature_RNA < 2500 &
+    percent.mt < 5
+)
+```
+
+```{r}
+#| label: 02-qc-accessible-summary-after
+#| echo: false
+
+metadata_after_qc <- pbmc[[]]
+
+qc_after <- data.frame(
+  cell_id = rownames(metadata_after_qc),
+  nFeature_RNA = metadata_after_qc$nFeature_RNA,
+  nCount_RNA = metadata_after_qc$nCount_RNA,
+  percent.mt = metadata_after_qc$percent.mt,
+  stringsAsFactors = FALSE
+)
+
+qc_distribution_after <- dplyr::bind_rows(
+  summarise_numeric_metric(
+    qc_after$nFeature_RNA,
+    "nFeature_RNA",
+    "after filtering"
+  ),
+  summarise_numeric_metric(
+    qc_after$nCount_RNA,
+    "nCount_RNA",
+    "after filtering"
+  ),
+  summarise_numeric_metric(
+    qc_after$percent.mt,
+    "percent.mt",
+    "after filtering"
+  )
+)
+
+qc_before_after <- dplyr::bind_rows(
+  qc_distribution_before,
+  qc_distribution_after
+)
+
+save_tsv(
+  qc_after,
+  "02_qc_per_cell_after_filtering.tsv"
+)
+
+save_tsv(
+  qc_before_after,
+  "02_qc_distribution_before_after.tsv"
+)
+
+show_table(
+  qc_before_after,
+  "QC distributions before and after filtering",
+  digits = 2,
+  link_label = "Download the complete before-and-after QC table",
+  link_path = path_for_link("tables", "02_qc_distribution_before_after.tsv")
+)
+```
+
+**Accessible checkpoint.** QC retained **`r ncol(pbmc)` of
+`r nrow(qc_before)` cells (`r round(100 * ncol(pbmc) / nrow(qc_before), 1)`%)**.
+The current official tutorial reports 2,638 retained cells for the reference
+matrix.
+
+# Normalizing the data
+
+`NormalizeData()` creates log-normalized values in the RNA `data` layer. It
+does not overwrite the raw `counts` layer.
+
+```{r}
+#| label: 03-normalize-data
+
+pbmc <- NormalizeData(
+  pbmc,
+  normalization.method = "LogNormalize",
+  scale.factor = 1e4
+)
+```
+
+The same default behaviour can be requested more briefly:
+
+```{r}
+#| label: 03-normalize-default-equivalent
+#| eval: false
+
+pbmc <- NormalizeData(pbmc)
+```
+
+Global-scaling normalization is used here because it is the method in the
+standard tutorial. `SCTransform()` is an alternative workflow and would replace
+`NormalizeData()`, `FindVariableFeatures()`, and `ScaleData()` rather than being
+inserted into this exact analysis.
+
+# Identification of highly variable features (feature selection)
+
+`FindVariableFeatures()` records 2,000 genes for PCA. It does not remove the
+remaining genes from the Seurat object.
+
+```{r}
+#| label: 04-find-variable-features
+
+pbmc <- FindVariableFeatures(
+  pbmc,
+  selection.method = "vst",
+  nfeatures = 2000
+)
+
+# Identify the ten most highly variable genes.
+top10 <- head(VariableFeatures(pbmc), 10)
+```
+
+```{r}
+#| label: 04-variable-feature-table
+#| echo: false
+
+variable_feature_table <- HVFInfo(pbmc)
+variable_feature_table$gene <- rownames(variable_feature_table)
+rownames(variable_feature_table) <- NULL
+
+variable_feature_table <- variable_feature_table |>
+  dplyr::arrange(dplyr::desc(variance.standardized)) |>
+  dplyr::mutate(rank = dplyr::row_number()) |>
+  dplyr::select(rank, gene, dplyr::everything())
+
+save_tsv(
+  variable_feature_table,
+  "04_variable_features_ranked.tsv"
+)
+
+show_table(
+  head(variable_feature_table, 20),
+  "Twenty highest-ranked variable features",
+  digits = 3,
+  link_label = "Download the complete ranked variable-feature table",
+  link_path = path_for_link("tables", "04_variable_features_ranked.tsv")
+)
+```
+
+```{r}
+#| label: fig-04-variable-features
+#| fig-cap: "Variable-feature plots with and without labels, matching the official tutorial."
+#| fig-alt: "Two scatter plots compare mean expression with standardized variance. The left plot highlights the selected variable genes. The right plot additionally labels the ten highest-ranked genes, which are also listed in the adjacent table."
+#| fig-width: 10
+#| fig-height: 5
+
+plot1 <- VariableFeaturePlot(pbmc)
+plot2 <- LabelPoints(
+  plot = plot1,
+  points = top10,
+  repel = TRUE
+)
+variable_feature_plot <- plot1 + plot2
+
+emit_and_save_plot(
+  variable_feature_plot,
+  filename = "04_variable_features",
+  width = 10,
+  height = 5
+)
+```
+
+**Accessible checkpoint.** Seurat selected **`r length(VariableFeatures(pbmc))`
+variable features**. The ten highest-ranked genes are
+**`r paste(top10, collapse = ", ")`**.
+
+# Scaling the data
+
+The official workflow scales all genes so that later heatmaps can include any
+marker gene. Scaling centres each gene across cells and scales its variance.
+
+```{r}
+#| label: 05-scale-data
+#| results: hide
+
+all.genes <- rownames(pbmc)
+pbmc <- ScaleData(pbmc, features = all.genes)
+```
+
+A regression example is shown for completeness but is not executed, matching
+the official tutorial:
+
+```{r}
+#| label: 05-regression-example
+#| eval: false
+
+pbmc <- ScaleData(pbmc, vars.to.regress = "percent.mt")
+```
+
+# Perform linear dimensional reduction
+
+PCA uses the variable features as input. Seurat computes the components and
+stores cell embeddings and gene loadings in the object.
+
+```{r}
+#| label: 06-run-pca
+#| results: hide
+
+pbmc <- RunPCA(
+  pbmc,
+  features = VariableFeatures(object = pbmc)
+)
+```
+
+```{r}
+#| label: 06-print-pca-loadings
+
+print(
+  pbmc[["pca"]],
+  dims = 1:5,
+  nfeatures = 5
+)
+```
+
+```{r}
+#| label: 06-pca-accessible-tables
+#| echo: false
+
+pca_embedding_matrix <- Embeddings(pbmc, reduction = "pca")
+pca_loading_matrix <- Loadings(pbmc, reduction = "pca")
+pca_standard_deviation <- Stdev(pbmc, reduction = "pca")
+pca_variance <- pca_standard_deviation^2
+pca_variance_percentage <- 100 * pca_variance / sum(pca_variance)
+
+pca_embeddings <- data.frame(
+  cell_id = rownames(pca_embedding_matrix),
+  as.data.frame(pca_embedding_matrix, check.names = FALSE),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+pca_loadings <- data.frame(
+  gene = rownames(pca_loading_matrix),
+  as.data.frame(pca_loading_matrix, check.names = FALSE),
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+pca_variance_table <- data.frame(
+  PC = seq_along(pca_standard_deviation),
+  standard_deviation = pca_standard_deviation,
+  variance_percentage_among_computed_PCs = pca_variance_percentage,
+  cumulative_percentage_among_computed_PCs = cumsum(
+    pca_variance_percentage
+  ),
+  selected_for_downstream = seq_along(pca_standard_deviation) <= 10,
+  stringsAsFactors = FALSE
+)
+
+pca_loading_summary_rows <- list()
+row_index <- 1
+
+for (pc_index in seq_len(min(15, ncol(pca_loading_matrix)))) {
+  values <- pca_loading_matrix[, pc_index]
+  positive_genes <- names(sort(values, decreasing = TRUE))[1:5]
+  negative_genes <- names(sort(values, decreasing = FALSE))[1:5]
+
+  pca_loading_summary_rows[[row_index]] <- data.frame(
+    PC = pc_index,
+    strongest_positive_genes = paste(positive_genes, collapse = ", "),
+    strongest_negative_genes = paste(negative_genes, collapse = ", "),
+    stringsAsFactors = FALSE
+  )
+  row_index <- row_index + 1
+}
+
+pca_loading_summary <- dplyr::bind_rows(
+  pca_loading_summary_rows
+)
+
+pca_state <- object_state(
+  pbmc,
+  "after normalization, variable-feature selection, scaling, and PCA"
+)
+
+save_tsv(
+  pca_embeddings,
+  "06_pca_cell_embeddings.tsv"
+)
+
+save_tsv(
+  pca_loadings,
+  "06_pca_gene_loadings.tsv"
+)
+
+save_tsv(
+  pca_variance_table,
+  "06_pca_variance.tsv"
+)
+
+save_tsv(
+  pca_loading_summary,
+  "06_pca_top_loading_genes.tsv"
+)
+
+save_tsv(
+  pca_state,
+  "06_object_state_after_pca.tsv"
+)
+
+show_table(
+  pca_loading_summary,
+  "Five strongest positive and negative loading genes for PCs 1 through 15",
+  digits = 3,
+  link_label = "Download the complete PCA gene-loading matrix",
+  link_path = path_for_link("tables", "06_pca_gene_loadings.tsv")
+)
+```
+
+```{r}
+#| label: fig-06-pca-loadings
+#| fig-cap: "Genes with the strongest loadings on principal components 1 and 2."
+#| fig-alt: "Two panels list genes with strong positive or negative contributions to PC1 and PC2. A nearby table gives the five strongest genes in both directions for PCs 1 through 15."
+#| fig-width: 10
+#| fig-height: 8
+
+pca_loading_plot <- VizDimLoadings(
+  pbmc,
+  dims = 1:2,
+  reduction = "pca"
+)
+
+emit_and_save_plot(
+  pca_loading_plot,
+  filename = "06_pca_loadings",
+  width = 10,
+  height = 8
+)
+```
+
+```{r}
+#| label: fig-06-pca-scatter
+#| fig-cap: "Cells projected onto principal components 1 and 2."
+#| fig-alt: "Each point is one cell positioned by PC1 and PC2 before clustering. Exact coordinates for every computed principal component are available in the PCA embedding table."
+#| fig-width: 10
+#| fig-height: 8
+
+pca_scatter_plot <- DimPlot(
+  pbmc,
+  reduction = "pca"
+) + NoLegend()
+
+emit_and_save_plot(
+  pca_scatter_plot,
+  filename = "06_pca_scatter",
+  width = 10,
+  height = 8
+)
+```
+
+`DimHeatmap()` orders genes and selected cells by their PCA scores. The first
+heatmap shows PC1 alone; the second reproduces the official 15-PC overview.
+
+```{r}
+#| label: fig-06-pca-heatmap-pc1
+#| fig-cap: "Expression heatmap for principal component 1."
+#| fig-alt: "A heatmap shows genes and extreme cells associated with positive and negative PC1 scores. The exact PC1 gene loadings are available in the PCA loading table."
+#| fig-width: 9
+#| fig-height: 6
+
+pca_heatmap_pc1 <- DimHeatmap(
+  pbmc,
+  dims = 1,
+  cells = 500,
+  balanced = TRUE,
+  fast = FALSE
+)
+
+emit_and_save_plot(
+  pca_heatmap_pc1,
+  filename = "06_pca_heatmap_pc1",
+  width = 9,
+  height = 6
+)
+```
+
+```{r}
+#| label: fig-06-pca-heatmap-pc1-pc15
+#| fig-cap: "Expression heatmaps for principal components 1 through 15."
+#| fig-alt: "Fifteen heatmap panels show genes and selected cells associated with positive and negative scores for PCs 1 through 15. The adjacent loading table is the primary nonvisual source."
+#| fig-width: 9
+#| fig-height: 15
+
+pca_heatmap_pc1_pc15 <- DimHeatmap(
+  pbmc,
+  dims = 1:15,
+  cells = 500,
+  balanced = TRUE,
+  fast = FALSE
+)
+
+emit_and_save_plot(
+  pca_heatmap_pc1_pc15,
+  filename = "06_pca_heatmap_pc1_pc15",
+  width = 9,
+  height = 15
+)
+```
+
+# Determine the dimensionality of the dataset
+
+The current official tutorial no longer runs JackStraw because it is slow and
+not routinely used. It inspects PCA loadings and heatmaps, displays an elbow
+plot, and uses PCs 1 through 10 for the remaining workflow.
+
+```{r}
+#| label: fig-07-pca-elbow
+#| fig-cap: "Principal-component standard deviations used to select ten PCs."
+#| fig-alt: "The elbow plot shows progressively decreasing standard deviation across principal components. The official tutorial selects PCs 1 through 10; exact standard deviations and cumulative percentages are provided in the adjacent table."
+#| fig-width: 10
+#| fig-height: 6
+
+pca_elbow_plot <- ElbowPlot(pbmc)
+
+emit_and_save_plot(
+  pca_elbow_plot,
+  filename = "07_pca_elbow",
+  width = 10,
+  height = 6
+)
+```
+
+```{r}
+#| label: 07-pca-variance-table
+#| echo: false
+
+show_table(
+  head(pca_variance_table, 20),
+  "Numerical PCA summary for the first 20 components",
+  digits = 3,
+  link_label = "Download the complete PCA variance table",
+  link_path = path_for_link("tables", "06_pca_variance.tsv")
+)
+```
+
+**Accessible checkpoint.** PCs 1 through 10 account for
+**`r round(sum(pca_variance_percentage[1:10]), 1)`%** of the variance represented
+by the computed PCs. This is not the percentage of all variance in the original
+count matrix. The official workflow fixes the downstream dimensions at
+`1:10`.
+
+# Cluster the cells
+
+The official workflow constructs KNN and SNN graphs from PCs 1 through 10 and
+clusters the graph at resolution 0.5.
+
+```{r}
+#| label: 08-cluster-cells
+
+pbmc <- FindNeighbors(pbmc, dims = 1:10)
+pbmc <- FindClusters(pbmc, resolution = 0.5)
+
+# Look at cluster IDs of the first five cells.
+head(Idents(pbmc), 5)
+```
+
+```{r}
+#| label: 08-cluster-accessible-summary
+#| echo: false
+
+pbmc$seurat_cluster_id <- as.character(Idents(pbmc))
+
+cluster_sizes <- data.frame(
+  cluster = names(table(Idents(pbmc))),
+  cells = as.integer(table(Idents(pbmc))),
+  stringsAsFactors = FALSE
+)
+cluster_sizes$percentage_of_cells <- 100 * cluster_sizes$cells / ncol(pbmc)
+
+cluster_state <- object_state(
+  pbmc,
+  "after neighbour graph construction and clustering"
+)
+
+save_tsv(
+  cluster_sizes,
+  "08_cluster_sizes.tsv"
+)
+
+save_tsv(
+  data.frame(
+    cell_id = colnames(pbmc),
+    cluster = as.character(Idents(pbmc)),
+    stringsAsFactors = FALSE
+  ),
+  "08_cluster_assignments.tsv"
+)
+
+save_tsv(
+  cluster_state,
+  "08_object_state_after_clustering.tsv"
+)
+
+if (!identical(levels(Idents(pbmc)), as.character(0:8))) {
+  warning(
+    "The current clustering does not have the official cluster levels 0 through 8. ",
+    "The workflow can continue through marker discovery, but the fixed official ",
+    "cell-type map will not be applied unless the levels match exactly.",
+    call. = FALSE
+  )
+}
+
+show_table(
+  cluster_sizes,
+  "Cluster sizes at resolution 0.5",
+  digits = 2,
+  link_label = "Download per-cell cluster assignments",
+  link_path = path_for_link("tables", "08_cluster_assignments.tsv")
+)
+```
+
+**Accessible checkpoint.** Resolution 0.5 produced
+**`r nrow(cluster_sizes)` clusters**. The smallest contains
+**`r min(cluster_sizes$cells)` cells** and the largest contains
+**`r max(cluster_sizes$cells)` cells**.
+
+# Run non-linear dimensional reduction (UMAP / t-SNE)
+
+UMAP is used here as a visualization of the structure already represented by
+the PCA-based graph. UMAP axis direction, orientation, and global distance are
+not biological measurements.
+
+```{r}
+#| label: 09-run-umap
+
+pbmc <- RunUMAP(pbmc, dims = 1:10)
+```
+
+```{r}
+#| label: 09-umap-accessible-fingerprint
+#| echo: false
+
+umap_matrix <- Embeddings(pbmc, reduction = "umap")
+
+umap_coordinates <- data.frame(
+  cell_id = rownames(umap_matrix),
+  UMAP_1 = umap_matrix[, 1],
+  UMAP_2 = umap_matrix[, 2],
+  cluster = as.character(Idents(pbmc)),
+  stringsAsFactors = FALSE
+)
+
+umap_centroids <- umap_coordinates |>
+  dplyr::group_by(cluster) |>
+  dplyr::summarise(
+    cells = dplyr::n(),
+    percentage_of_cells = 100 * cells / nrow(umap_coordinates),
+    centroid_UMAP_1 = mean(UMAP_1),
+    centroid_UMAP_2 = mean(UMAP_2),
+    UMAP_1_minimum = min(UMAP_1),
+    UMAP_1_maximum = max(UMAP_1),
+    UMAP_2_minimum = min(UMAP_2),
+    UMAP_2_maximum = max(UMAP_2),
+    .groups = "drop"
+  )
+
+umap_coordinates_with_centroids <- dplyr::left_join(
+  umap_coordinates,
+  umap_centroids |>
+    dplyr::select(
+      cluster,
+      centroid_UMAP_1,
+      centroid_UMAP_2
+    ),
+  by = "cluster"
+) |>
+  dplyr::mutate(
+    distance_to_centroid = sqrt(
+      (UMAP_1 - centroid_UMAP_1)^2 +
+        (UMAP_2 - centroid_UMAP_2)^2
+    )
+  )
+
+umap_spread <- umap_coordinates_with_centroids |>
+  dplyr::group_by(cluster) |>
+  dplyr::summarise(
+    median_distance_to_centroid = stats::median(distance_to_centroid),
+    .groups = "drop"
+  )
+
+snn_names <- grep("_snn$", Graphs(pbmc), value = TRUE)
+
+if (length(snn_names) != 1) {
+  stop(
+    "Expected exactly one SNN graph after FindNeighbors, but found: ",
+    paste(snn_names, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+snn_graph <- pbmc[[snn_names[1]]]
+snn_entries <- Matrix::summary(snn_graph)
+snn_entries <- snn_entries[
+  snn_entries$i != snn_entries$j,
+  ,
+  drop = FALSE
+]
+
+cluster_lookup <- setNames(
+  as.character(Idents(pbmc)),
+  colnames(pbmc)
+)
+
+snn_edge_table <- data.frame(
+  source_cell = rownames(snn_graph)[snn_entries$i],
+  target_cell = colnames(snn_graph)[snn_entries$j],
+  weight = snn_entries$x,
+  stringsAsFactors = FALSE
+)
+
+snn_edge_table$source_cluster <- cluster_lookup[
+  snn_edge_table$source_cell
+]
+snn_edge_table$target_cluster <- cluster_lookup[
+  snn_edge_table$target_cell
+]
+
+cluster_connectivity <- snn_edge_table |>
+  dplyr::group_by(source_cluster, target_cluster) |>
+  dplyr::summarise(
+    summed_SNN_weight = sum(weight),
+    .groups = "drop"
+  )
+
+within_cluster_connectivity <- cluster_connectivity |>
+  dplyr::group_by(source_cluster) |>
+  dplyr::summarise(
+    within_cluster_SNN_fraction = sum(
+      summed_SNN_weight[target_cluster == source_cluster]
+    ) / sum(summed_SNN_weight),
+    .groups = "drop"
+  )
+
+strongest_other_cluster <- cluster_connectivity |>
+  dplyr::filter(source_cluster != target_cluster) |>
+  dplyr::group_by(source_cluster) |>
+  dplyr::slice_max(
+    order_by = summed_SNN_weight,
+    n = 1,
+    with_ties = FALSE
+  ) |>
+  dplyr::ungroup() |>
+  dplyr::rename(
+    strongest_connected_other_cluster = target_cluster,
+    strongest_other_cluster_SNN_weight = summed_SNN_weight
+  )
+
+umap_fingerprint <- umap_centroids |>
+  dplyr::left_join(umap_spread, by = "cluster") |>
+  dplyr::left_join(
+    within_cluster_connectivity,
+    by = c("cluster" = "source_cluster")
+  ) |>
+  dplyr::left_join(
+    strongest_other_cluster,
+    by = c("cluster" = "source_cluster")
+  )
+
+median_centroid_x <- stats::median(umap_fingerprint$centroid_UMAP_1)
+median_centroid_y <- stats::median(umap_fingerprint$centroid_UMAP_2)
+
+umap_fingerprint <- umap_fingerprint |>
+  dplyr::mutate(
+    horizontal_position = ifelse(
+      centroid_UMAP_1 < median_centroid_x,
+      "left half",
+      "right half"
+    ),
+    vertical_position = ifelse(
+      centroid_UMAP_2 < median_centroid_y,
+      "lower half",
+      "upper half"
+    )
+  ) |>
+  dplyr::arrange(as.numeric(cluster))
+
+umap_state <- object_state(
+  pbmc,
+  "after clustering and UMAP"
+)
+
+save_tsv(
+  umap_coordinates,
+  "09_umap_coordinates.tsv"
+)
+
+save_tsv(
+  cluster_connectivity,
+  "09_cluster_SNN_connectivity.tsv"
+)
+
+save_tsv(
+  umap_fingerprint,
+  "09_umap_cluster_fingerprint.tsv"
+)
+
+save_tsv(
+  umap_state,
+  "09_object_state_after_umap.tsv"
+)
+
+show_table(
+  umap_fingerprint |>
+    dplyr::select(
+      cluster,
+      cells,
+      percentage_of_cells,
+      horizontal_position,
+      vertical_position,
+      median_distance_to_centroid,
+      strongest_connected_other_cluster,
+      within_cluster_SNN_fraction
+    ),
+  "Nonvisual UMAP and SNN fingerprint by cluster",
+  digits = 3,
+  link_label = "Download complete UMAP coordinates",
+  link_path = path_for_link("tables", "09_umap_coordinates.tsv")
+)
+```
+
+The within-cluster SNN fraction describes the graph partition used to create the
+clusters, so it is a consistency summary rather than independent biological
+validation.
+
+```{r}
+#| label: fig-09-umap-clusters
+#| fig-cap: "UMAP coloured by the graph-based clusters, matching the official tutorial."
+#| fig-alt: "Each point is one cell coloured by cluster. The adjacent fingerprint reports exact cluster sizes, current UMAP centroid positions, spread, strongest SNN-connected other cluster, and within-cluster SNN fraction."
+#| fig-width: 8
+#| fig-height: 8
+
+umap_cluster_plot <- DimPlot(
+  pbmc,
+  reduction = "umap"
+)
+
+emit_and_save_plot(
+  umap_cluster_plot,
+  filename = "09_umap_clusters",
+  width = 8,
+  height = 8
+)
+```
+
+```{r}
+#| label: 09-umap-fingerprint-narrative
+#| echo: false
+#| results: asis
+
+for (row_index in seq_len(nrow(umap_fingerprint))) {
+  row <- umap_fingerprint[row_index, ]
+
+  cat(
+    sprintf(
+      "**Cluster %s.** %d cells, %.1f%% of the dataset. ",
+      row$cluster,
+      row$cells,
+      row$percentage_of_cells
+    ),
+    sprintf(
+      "Its centroid is in the %s and %s of this particular UMAP. ",
+      row$horizontal_position,
+      row$vertical_position
+    ),
+    sprintf(
+      "Its strongest SNN connection to another cluster is cluster %s. ",
+      row$strongest_connected_other_cluster
+    ),
+    sprintf(
+      "The fraction of outgoing SNN weight remaining within the cluster is %.2f.",
+      row$within_cluster_SNN_fraction
+    ),
+    "\n\n",
+    sep = ""
+  )
+}
+```
+
+```{r}
+#| label: 09-save-preannotation-object
+#| echo: false
+
+if (isTRUE(params$save_rds)) {
+  saveRDS(
+    pbmc,
+    file = file.path(object_dir, "pbmc3k_pre_annotation.rds")
+  )
+}
+```
+
+# Finding differentially expressed features (cluster biomarkers)
+
+These tests compare cells within one sample. Their adjusted p-values describe
+cluster separation in this dataset and are not evidence for a replicated
+condition-level comparison.
+
+```{r}
+#| label: 10-find-markers
+
+# Find all markers of cluster 2.
+cluster2.markers <- FindMarkers(pbmc, ident.1 = 2)
+head(cluster2.markers, n = 5)
+
+# Find markers distinguishing cluster 5 from clusters 0 and 3.
+cluster5.markers <- FindMarkers(
+  pbmc,
+  ident.1 = 5,
+  ident.2 = c(0, 3)
+)
+head(cluster5.markers, n = 5)
+
+# Find markers for every cluster compared with all remaining cells.
+pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE)
+
+pbmc.markers |>
+  dplyr::group_by(cluster) |>
+  dplyr::filter(avg_log2FC > 1)
+```
+
+```{r}
+#| label: 10-marker-tables
+#| echo: false
+
+cluster2_markers_export <- data.frame(
+  gene = rownames(cluster2.markers),
+  cluster2.markers,
+  row.names = NULL,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+cluster5_markers_export <- data.frame(
+  gene = rownames(cluster5.markers),
+  cluster5.markers,
+  row.names = NULL,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+markers_log2fc_above_1 <- pbmc.markers |>
+  dplyr::filter(avg_log2FC > 1)
+
+marker_top_five_summary <- markers_log2fc_above_1 |>
+  dplyr::group_by(cluster) |>
+  dplyr::slice_head(n = 5) |>
+  dplyr::ungroup() |>
+  dplyr::select(
+    cluster,
+    gene,
+    avg_log2FC,
+    pct.1,
+    pct.2,
+    p_val_adj
+  )
+
+save_tsv(
+  cluster2_markers_export,
+  "10_cluster2_markers.tsv"
+)
+
+save_tsv(
+  cluster5_markers_export,
+  "10_cluster5_vs_clusters0_and3_markers.tsv"
+)
+
+save_tsv(
+  pbmc.markers,
+  "10_all_positive_cluster_markers.tsv"
+)
+
+save_tsv(
+  markers_log2fc_above_1,
+  "10_positive_cluster_markers_avg_log2FC_above_1.tsv"
+)
+
+show_table(
+  marker_top_five_summary,
+  "First five positive markers with average log2 fold change above 1 for each cluster",
+  digits = 3,
+  link_label = "Download the complete positive marker table",
+  link_path = path_for_link("tables", "10_all_positive_cluster_markers.tsv")
+)
+```
+
+The marker-table columns have the following meanings:
+
+| Column | Interpretation |
+|---|---|
+| `avg_log2FC` | Average log2 fold difference between the target identity and its comparison group. |
+| `pct.1` | Fraction of cells with detected expression in the target identity. |
+| `pct.2` | Fraction of cells with detected expression in the comparison cells. |
+| `p_val_adj` | Multiple-testing-adjusted p-value returned by Seurat. Large cell numbers can produce very small p-values, so effect size and detection fractions remain important. |
+
+The official tutorial also demonstrates the ROC marker test:
+
+```{r}
+#| label: 10-find-roc-markers
+
+cluster0.markers <- FindMarkers(
+  pbmc,
+  ident.1 = 0,
+  logfc.threshold = 0.25,
+  test.use = "roc",
+  only.pos = TRUE
+)
+```
+
+```{r}
+#| label: 10-save-roc-markers
+#| echo: false
+
+cluster0_roc_export <- data.frame(
+  gene = rownames(cluster0.markers),
+  cluster0.markers,
+  row.names = NULL,
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+save_tsv(
+  cluster0_roc_export,
+  "10_cluster0_ROC_markers.tsv"
+)
+```
+
+## Marker-expression visualizations
+
+The following figures use the same genes and Seurat plotting functions as the
+official tutorial. Numerical expression summaries are calculated directly from
+the corresponding RNA layer.
+
+```{r}
+#| label: 10-marker-expression-source-tables
+#| echo: false
+
+annotation_genes <- c(
+  "IL7R",
+  "CCR7",
+  "CD14",
+  "LYZ",
+  "S100A4",
+  "MS4A1",
+  "CD8A",
+  "FCGR3A",
+  "MS4A7",
+  "GNLY",
+  "NKG7",
+  "FCER1A",
+  "CST3",
+  "PPBP"
+)
+
+feature_plot_genes <- c(
+  "MS4A1",
+  "GNLY",
+  "CD3E",
+  "CD14",
+  "FCER1A",
+  "FCGR3A",
+  "LYZ",
+  "PPBP",
+  "CD8A"
+)
+
+normalized_marker_genes <- unique(c(
+  "MS4A1",
+  "CD79A",
+  feature_plot_genes,
+  annotation_genes
+))
+
+normalized_marker_expression <- expression_summary_by_identity(
+  pbmc,
+  normalized_marker_genes,
+  layer = "data"
+)
+
+raw_marker_expression <- expression_summary_by_identity(
+  pbmc,
+  c("NKG7", "PF4"),
+  layer = "counts"
+)
+
+save_tsv(
+  normalized_marker_expression,
+  "10_marker_expression_normalized_by_cluster.tsv"
+)
+
+save_tsv(
+  raw_marker_expression,
+  "10_marker_expression_raw_counts_by_cluster.tsv"
+)
+```
+
+```{r}
+#| label: fig-10-marker-violin-normalized
+#| fig-cap: "Normalized expression of MS4A1 and CD79A across clusters."
+#| fig-alt: "Two violin plots show normalized MS4A1 and CD79A expression for every cluster. The adjacent table reports average expression, median expression, and percentage of cells with detected expression."
+#| fig-width: 10
+#| fig-height: 5
+
+marker_violin_normalized <- VlnPlot(
+  pbmc,
+  features = c("MS4A1", "CD79A")
+)
+
+emit_and_save_plot(
+  marker_violin_normalized,
+  filename = "10_marker_violin_normalized",
+  width = 10,
+  height = 5
+)
+```
+
+```{r}
+#| label: 10-marker-violin-normalized-table
+#| echo: false
+
+show_table(
+  normalized_marker_expression |>
+    dplyr::filter(gene %in% c("MS4A1", "CD79A")),
+  "Numerical equivalent of the normalized MS4A1 and CD79A violin plots",
+  digits = 3,
+  link_label = "Download normalized marker expression for all tutorial genes",
+  link_path = path_for_link(
+    "tables",
+    "10_marker_expression_normalized_by_cluster.tsv"
+  )
+)
+```
+
+```{r}
+#| label: fig-10-marker-violin-counts
+#| fig-cap: "Raw NKG7 and PF4 counts across clusters on a logarithmic axis."
+#| fig-alt: "Two violin plots show raw NKG7 and PF4 counts by cluster using a logarithmic feature axis. The adjacent table reports raw-count averages, medians, and detection percentages."
+#| fig-width: 10
+#| fig-height: 5
+
+marker_violin_counts <- VlnPlot(
+  pbmc,
+  features = c("NKG7", "PF4"),
+  layer = "counts",
+  log = TRUE
+)
+
+emit_and_save_plot(
+  marker_violin_counts,
+  filename = "10_marker_violin_counts",
+  width = 10,
+  height = 5
+)
+```
+
+```{r}
+#| label: 10-marker-violin-counts-table
+#| echo: false
+
+show_table(
+  raw_marker_expression,
+  "Numerical equivalent of the raw-count NKG7 and PF4 violin plots",
+  digits = 3,
+  link_label = "Download the raw-count marker-expression table",
+  link_path = path_for_link(
+    "tables",
+    "10_marker_expression_raw_counts_by_cluster.tsv"
+  )
+)
+```
+
+```{r}
+#| label: fig-10-marker-featureplots
+#| fig-cap: "Canonical PBMC marker expression on the UMAP."
+#| fig-alt: "Nine UMAP panels show MS4A1, GNLY, CD3E, CD14, FCER1A, FCGR3A, LYZ, PPBP, and CD8A expression. A nearby table identifies the cluster with the highest average expression and reports its detection percentage for each gene."
+#| fig-width: 10
+#| fig-height: 8
+
+marker_feature_plot <- FeaturePlot(
+  pbmc,
+  features = c(
+    "MS4A1",
+    "GNLY",
+    "CD3E",
+    "CD14",
+    "FCER1A",
+    "FCGR3A",
+    "LYZ",
+    "PPBP",
+    "CD8A"
+  )
+)
+
+emit_and_save_plot(
+  marker_feature_plot,
+  filename = "10_marker_featureplots",
+  width = 10,
+  height = 8
+)
+```
+
+```{r}
+#| label: 10-marker-featureplot-table
+#| echo: false
+
+feature_plot_peak_clusters <- normalized_marker_expression |>
+  dplyr::filter(gene %in% feature_plot_genes) |>
+  dplyr::group_by(gene) |>
+  dplyr::slice_max(
+    order_by = average_expression,
+    n = 1,
+    with_ties = FALSE
+  ) |>
+  dplyr::ungroup() |>
+  dplyr::rename(
+    cluster_with_highest_average_expression = identity
+  ) |>
+  dplyr::select(
+    gene,
+    cluster_with_highest_average_expression,
+    average_expression,
+    median_expression,
+    percentage_detected
+  )
+
+show_table(
+  feature_plot_peak_clusters,
+  "Highest-average cluster for every marker shown in the FeaturePlot figure",
+  digits = 3,
+  link_label = "Download the complete normalized marker-expression table",
+  link_path = path_for_link(
+    "tables",
+    "10_marker_expression_normalized_by_cluster.tsv"
+  )
+)
+```
+
+`DoHeatmap()` uses the first ten markers with `avg_log2FC > 1` in each cluster,
+matching the current tutorial.
+
+```{r}
+#| label: 10-select-top-heatmap-markers
+
+pbmc.markers |>
+  dplyr::group_by(cluster) |>
+  dplyr::filter(avg_log2FC > 1) |>
+  dplyr::slice_head(n = 10) |>
+  dplyr::ungroup() -> top10
+```
+
+```{r}
+#| label: fig-10-marker-heatmap
+#| fig-cap: "Top positive marker genes for every cluster."
+#| fig-alt: "A heatmap displays up to ten positive markers with average log2 fold change above 1 for each cluster. The exact gene list, fold changes, detection fractions, and adjusted p-values are provided in the marker table."
+#| fig-width: 10
+#| fig-height: 8
+
+marker_heatmap <- DoHeatmap(
+  pbmc,
+  features = top10$gene
+) + NoLegend()
+
+emit_and_save_plot(
+  marker_heatmap,
+  filename = "10_marker_heatmap",
+  width = 10,
+  height = 8
+)
+```
+
+```{r}
+#| label: 10-marker-heatmap-table
+#| echo: false
+
+save_tsv(
+  top10,
+  "10_top10_heatmap_markers_per_cluster.tsv"
+)
+
+heatmap_marker_summary <- top10 |>
+  dplyr::group_by(cluster) |>
+  dplyr::slice_head(n = 3) |>
+  dplyr::summarise(
+    first_three_heatmap_markers = paste(gene, collapse = ", "),
+    .groups = "drop"
+  )
+
+show_table(
+  heatmap_marker_summary,
+  "First three genes from each cluster-specific heatmap marker set",
+  digits = 3,
+  link_label = "Download the complete heatmap marker table",
+  link_path = path_for_link(
+    "tables",
+    "10_top10_heatmap_markers_per_cluster.tsv"
+  )
+)
+```
+
+# Assigning cell type identity to clusters
+
+The official PBMC 3k tutorial applies the following fixed mapping after
+inspecting canonical markers:
+
+| Cluster ID | Canonical markers | Cell type |
+|---:|---|---|
+| 0 | IL7R, CCR7 | Naive CD4 T |
+| 1 | CD14, LYZ | CD14+ Mono |
+| 2 | IL7R, S100A4 | Memory CD4 T |
+| 3 | MS4A1 | B |
+| 4 | CD8A | CD8 T |
+| 5 | FCGR3A, MS4A7 | FCGR3A+ Mono |
+| 6 | GNLY, NKG7 | NK |
+| 7 | FCER1A, CST3 | DC |
+| 8 | PPBP | Platelet |
+
+The next table adds numerical marker evidence but does not replace or modify the
+official mapping.
+
+```{r}
+#| label: 11-annotation-evidence
+#| echo: false
+
+official_annotation_map <- data.frame(
+  cluster = as.character(0:8),
+  canonical_markers = c(
+    "IL7R, CCR7",
+    "CD14, LYZ",
+    "IL7R, S100A4",
+    "MS4A1",
+    "CD8A",
+    "FCGR3A, MS4A7",
+    "GNLY, NKG7",
+    "FCER1A, CST3",
+    "PPBP"
+  ),
+  cell_type = c(
+    "Naive CD4 T",
+    "CD14+ Mono",
+    "Memory CD4 T",
+    "B",
+    "CD8 T",
+    "FCGR3A+ Mono",
+    "NK",
+    "DC",
+    "Platelet"
+  ),
+  stringsAsFactors = FALSE
+)
+
+official_marker_long <- dplyr::bind_rows(
+  lapply(seq_len(nrow(official_annotation_map)), function(index) {
+    data.frame(
+      cluster = official_annotation_map$cluster[index],
+      cell_type = official_annotation_map$cell_type[index],
+      gene = trimws(strsplit(
+        official_annotation_map$canonical_markers[index],
+        ","
+      )[[1]]),
+      stringsAsFactors = FALSE
+    )
+  })
+)
+
+annotation_marker_evidence <- dplyr::left_join(
+  official_marker_long,
+  normalized_marker_expression,
+  by = c(
+    "cluster" = "identity",
+    "gene" = "gene"
+  )
+)
+
+annotation_evidence_summary <- annotation_marker_evidence |>
+  dplyr::group_by(cluster, cell_type) |>
+  dplyr::summarise(
+    canonical_marker_evidence = paste(
+      sprintf(
+        "%s: mean %.2f, %.1f%% detected",
+        gene,
+        average_expression,
+        percentage_detected
+      ),
+      collapse = "; "
+    ),
+    .groups = "drop"
+  )
+
+save_tsv(
+  official_annotation_map,
+  "11_official_cluster_to_celltype_map.tsv"
+)
+
+save_tsv(
+  annotation_marker_evidence,
+  "11_annotation_marker_expression.tsv"
+)
+
+show_table(
+  annotation_evidence_summary,
+  "Numerical support for the official PBMC 3k cluster labels",
+  digits = 3,
+  link_label = "Download the complete annotation marker-expression table",
+  link_path = path_for_link(
+    "tables",
+    "11_annotation_marker_expression.tsv"
+  )
+)
+```
+
+The cluster identifiers are arbitrary labels. Applying the fixed tutorial map
+is safe only when the current workflow has reproduced levels 0 through 8 in the
+same order. The following assertion fails clearly rather than silently assigning
+incorrect cell types.
+
+```{r}
+#| label: 11-apply-official-celltype-map
+
+expected_cluster_levels <- as.character(0:8)
+
+if (!identical(levels(pbmc), expected_cluster_levels)) {
+  stop(
+    "The official PBMC 3k cell-type map requires cluster levels 0 through 8 ",
+    "in that order. Observed levels: ",
+    paste(levels(pbmc), collapse = ", "),
+    ". Review the input, package versions, and marker tables before assigning labels.",
+    call. = FALSE
+  )
+}
+
+new.cluster.ids <- c(
+  "Naive CD4 T",
+  "CD14+ Mono",
+  "Memory CD4 T",
+  "B",
+  "CD8 T",
+  "FCGR3A+ Mono",
+  "NK",
+  "DC",
+  "Platelet"
+)
+
+names(new.cluster.ids) <- levels(pbmc)
+pbmc <- RenameIdents(pbmc, new.cluster.ids)
+pbmc$celltype <- as.character(Idents(pbmc))
+```
+
+```{r}
+#| label: fig-11-umap-celltypes
+#| fig-cap: "UMAP labelled with the official PBMC 3k cell types."
+#| fig-alt: "Cells are coloured and labelled as Naive CD4 T, CD14 positive monocytes, Memory CD4 T, B cells, CD8 T, FCGR3A positive monocytes, NK, dendritic cells, or platelets. The adjacent table gives cell counts and canonical marker evidence for every label."
+#| fig-width: 9
+#| fig-height: 5
+
+labelled_umap_plot <- DimPlot(
+  pbmc,
+  reduction = "umap",
+  label = TRUE,
+  pt.size = 0.5
+) + NoLegend()
+
+emit_and_save_plot(
+  labelled_umap_plot,
+  filename = "11_umap_celltypes",
+  width = 9,
+  height = 5
+)
+```
+
+```{r}
+#| label: 11-final-celltype-summary
+#| echo: false
+
+final_celltype_summary <- data.frame(
+  cell_type = names(table(Idents(pbmc))),
+  cells = as.integer(table(Idents(pbmc))),
+  stringsAsFactors = FALSE
+)
+final_celltype_summary$percentage_of_cells <- 100 *
+  final_celltype_summary$cells / ncol(pbmc)
+
+final_celltype_summary <- dplyr::left_join(
+  final_celltype_summary,
+  official_annotation_map |>
+    dplyr::select(cell_type, canonical_markers),
+  by = "cell_type"
+)
+
+final_umap <- Embeddings(pbmc, reduction = "umap")
+final_metadata <- pbmc[[]]
+final_metadata$cell_id <- rownames(final_metadata)
+final_metadata$UMAP_1 <- final_umap[rownames(final_metadata), 1]
+final_metadata$UMAP_2 <- final_umap[rownames(final_metadata), 2]
+
+final_metadata <- final_metadata |>
+  dplyr::select(
+    cell_id,
+    orig.ident,
+    nCount_RNA,
+    nFeature_RNA,
+    percent.mt,
+    seurat_cluster_id,
+    seurat_clusters,
+    celltype,
+    UMAP_1,
+    UMAP_2,
+    dplyr::everything()
+  )
+
+final_state <- object_state(
+  pbmc,
+  "after official cell-type annotation"
+)
+
+save_tsv(
+  final_celltype_summary,
+  "11_final_celltype_summary.tsv"
+)
+
+save_tsv(
+  final_metadata,
+  "11_final_cell_metadata.tsv"
+)
+
+save_tsv(
+  final_state,
+  "11_object_state_after_annotation.tsv"
+)
+
+show_table(
+  final_celltype_summary,
+  "Final cell counts and canonical markers by assigned cell type",
+  digits = 2,
+  link_label = "Download final per-cell metadata",
+  link_path = path_for_link("tables", "11_final_cell_metadata.tsv")
+)
+```
+
+The official tutorial also creates a larger labelled UMAP object for file
+export. The same plot specification is saved here without adding another visual
+figure to the rendered teaching sequence.
+
+```{r}
+#| label: 11-save-styled-umap
+#| echo: false
+
+plot <- DimPlot(
+  pbmc,
+  reduction = "umap",
+  label = TRUE,
+  label.size = 4.5
+) +
+  xlab("UMAP 1") +
+  ylab("UMAP 2") +
+  theme(
+    axis.title = element_text(size = 18),
+    legend.text = element_text(size = 18)
+  ) +
+  guides(
+    colour = guide_legend(
+      override.aes = list(size = 10)
+    )
+  )
+
+save_plot_without_display(
+  plot,
+  filename = "11_pbmc3k_umap_styled",
+  width = 12,
+  height = 7
+)
+
+ggplot2::ggsave(
+  filename = file.path(
+    figure_png_dir,
+    "11_pbmc3k_umap_styled.jpg"
+  ),
+  plot = plot,
+  width = 12,
+  height = 7,
+  units = "in",
+  dpi = params$figure_dpi,
+  quality = 50,
+  bg = "white"
+)
+```
+
+# Save the final object and reproducibility information
+
+```{r}
+#| label: 12-save-final-results
+#| echo: false
+
+if (isTRUE(params$save_rds)) {
+  saveRDS(
+    pbmc,
+    file = file.path(object_dir, "pbmc3k_final.rds")
+  )
+}
+
+session_info_text <- capture.output(sessionInfo())
+writeLines(
+  session_info_text,
+  con = file.path(log_dir, "12_session_info.txt")
+)
+```
+
+```{r}
+#| label: 12-core-parity-index
+#| echo: false
+
+core_parity <- data.frame(
+  official_stage_or_output = c(
+    "Read10X and CreateSeuratObject",
+    "Sparse count-matrix example",
+    "Dense-versus-sparse memory comparison",
+    "Mitochondrial percentage and metadata example",
+    "QC violin plot",
+    "Two QC scatter plots",
+    "Official QC filter",
+    "LogNormalize",
+    "Two-panel variable-feature plot",
+    "Scale all genes",
+    "RunPCA and print top loadings",
+    "VizDimLoadings",
+    "PCA DimPlot",
+    "PC1 DimHeatmap",
+    "PC1 to PC15 DimHeatmap",
+    "ElbowPlot",
+    "FindNeighbors and FindClusters",
+    "RunUMAP and cluster DimPlot",
+    "FindMarkers cluster 2",
+    "FindMarkers cluster 5 versus clusters 0 and 3",
+    "FindAllMarkers positive markers",
+    "ROC marker example",
+    "Normalized MS4A1 and CD79A VlnPlot",
+    "Raw-count NKG7 and PF4 VlnPlot",
+    "Nine-gene FeaturePlot",
+    "Top-marker DoHeatmap",
+    "Official canonical cluster map",
+    "Labelled final UMAP",
+    "Styled UMAP export object",
+    "Final RDS and session information"
+  ),
+  included = rep(TRUE, 30),
+  accessibility_addition = c(
+    "Object-state and sanity-check tables",
+    "Long-format count table",
+    "Explicit memory warning",
+    "Captioned metadata and QC summaries",
+    "Alternative text and numerical distribution table",
+    "Alternative text and threshold table",
+    "Per-cell pass/fail flags and before-after summary",
+    "Layer-state explanation",
+    "Complete ranked variable-feature table",
+    "Object-state checkpoint",
+    "Embeddings, loadings, and top-loading tables",
+    "Alternative text and loading summary",
+    "Alternative text and complete coordinates",
+    "Alternative text and loading table",
+    "Alternative text and loading table",
+    "Numerical variance table",
+    "Cluster-size and assignment tables",
+    "UMAP coordinates plus SNN fingerprint and narrative",
+    "Downloadable complete result table",
+    "Downloadable complete result table",
+    "Complete and filtered marker tables",
+    "Downloadable ROC table",
+    "Per-cluster mean, median, and detection table",
+    "Raw-count mean, median, and detection table",
+    "Highest-expression cluster table",
+    "Exact heatmap gene table and narrative summary",
+    "Numerical canonical-marker evidence",
+    "Cell-count and marker-evidence table",
+    "PNG, PDF, and JPEG copies",
+    "Output index, parameters, and accessible session log"
+  ),
+  stringsAsFactors = FALSE
+)
+
+save_tsv(
+  core_parity,
+  "12_official_core_parity.tsv"
+)
+
+figure_index <- data.frame(
+  figure = c(
+    "02_qc_violin",
+    "02_qc_scatter",
+    "04_variable_features",
+    "06_pca_loadings",
+    "06_pca_scatter",
+    "06_pca_heatmap_pc1",
+    "06_pca_heatmap_pc1_pc15",
+    "07_pca_elbow",
+    "09_umap_clusters",
+    "10_marker_violin_normalized",
+    "10_marker_violin_counts",
+    "10_marker_featureplots",
+    "10_marker_heatmap",
+    "11_umap_celltypes"
+  ),
+  caption = c(
+    "Per-cell QC distributions before filtering.",
+    "Relationships among QC metrics before filtering.",
+    "Variable-feature plots with and without labels.",
+    "Genes with the strongest loadings on PCs 1 and 2.",
+    "Cells projected onto PCs 1 and 2.",
+    "Expression heatmap for PC1.",
+    "Expression heatmaps for PCs 1 through 15.",
+    "Principal-component standard deviations.",
+    "UMAP coloured by clusters.",
+    "Normalized MS4A1 and CD79A expression.",
+    "Raw NKG7 and PF4 counts.",
+    "Canonical PBMC marker expression on UMAP.",
+    "Top positive marker genes for every cluster.",
+    "UMAP labelled with official PBMC 3k cell types."
+  ),
+  alternative_text = c(
+    "Three violin plots show detected genes, total UMI counts, and mitochondrial percentage before filtering.",
+    "Two scatter plots compare total UMI counts with mitochondrial percentage and detected genes.",
+    "Two mean-variance plots show selected variable genes, with the ten highest-ranked genes labelled in the second panel.",
+    "Two panels list genes with strong positive or negative contributions to PC1 and PC2.",
+    "Cells are positioned by PC1 and PC2 before graph construction and clustering.",
+    "A heatmap shows genes and extreme cells associated with positive and negative PC1 scores.",
+    "Fifteen heatmap panels show genes and selected cells associated with PCs 1 through 15.",
+    "The elbow plot shows decreasing principal-component standard deviations and supports the fixed ten-PC choice.",
+    "Each point is one cell coloured by its graph-based cluster.",
+    "Two violin plots show normalized MS4A1 and CD79A expression across clusters.",
+    "Two violin plots show raw NKG7 and PF4 counts across clusters on a logarithmic axis.",
+    "Nine UMAP panels show the canonical markers used in the official tutorial.",
+    "A heatmap displays up to ten positive markers with average log2 fold change above 1 for each cluster.",
+    "Cells are coloured and labelled with the nine official PBMC 3k cell-type identities."
+  ),
+  primary_nonvisual_source = c(
+    "02_qc_distribution_before_filtering.tsv; 02_qc_failure_summary.tsv",
+    "02_qc_per_cell_flags.tsv",
+    "04_variable_features_ranked.tsv",
+    "06_pca_top_loading_genes.tsv; 06_pca_gene_loadings.tsv",
+    "06_pca_cell_embeddings.tsv",
+    "06_pca_gene_loadings.tsv",
+    "06_pca_gene_loadings.tsv; 06_pca_top_loading_genes.tsv",
+    "06_pca_variance.tsv",
+    "09_umap_coordinates.tsv; 09_umap_cluster_fingerprint.tsv",
+    "10_marker_expression_normalized_by_cluster.tsv",
+    "10_marker_expression_raw_counts_by_cluster.tsv",
+    "10_marker_expression_normalized_by_cluster.tsv",
+    "10_top10_heatmap_markers_per_cluster.tsv",
+    "11_annotation_marker_expression.tsv; 11_final_celltype_summary.tsv"
+  ),
+  stringsAsFactors = FALSE
+)
+
+save_tsv(
+  figure_index,
+  "12_figure_accessibility_index.tsv"
+)
+
+object_state_history <- dplyr::bind_rows(
+  initial_state,
+  pca_state,
+  umap_state,
+  final_state
+)
+
+save_tsv(
+  object_state_history,
+  "12_object_state_history.tsv"
+)
+
+output_index <- data.frame(
+  output = c(
+    "Parameter snapshot",
+    "Official-core parity table",
+    "Complete QC flags",
+    "Ranked variable features",
+    "PCA variance",
+    "PCA cell embeddings",
+    "PCA gene loadings",
+    "Cluster assignments",
+    "UMAP coordinates",
+    "UMAP and SNN fingerprint",
+    "All positive cluster markers",
+    "Normalized marker expression",
+    "Raw-count marker expression",
+    "Official annotation map",
+    "Final per-cell metadata",
+    "Figure accessibility index",
+    "Object-state history",
+    "Pre-annotation Seurat object",
+    "Final Seurat object",
+    "Session information",
+    "Styled final UMAP PNG"
+  ),
+  relative_path = c(
+    path_for_link("tables", "00_parameters_used.tsv"),
+    path_for_link("tables", "12_official_core_parity.tsv"),
+    path_for_link("tables", "02_qc_per_cell_flags.tsv"),
+    path_for_link("tables", "04_variable_features_ranked.tsv"),
+    path_for_link("tables", "06_pca_variance.tsv"),
+    path_for_link("tables", "06_pca_cell_embeddings.tsv"),
+    path_for_link("tables", "06_pca_gene_loadings.tsv"),
+    path_for_link("tables", "08_cluster_assignments.tsv"),
+    path_for_link("tables", "09_umap_coordinates.tsv"),
+    path_for_link("tables", "09_umap_cluster_fingerprint.tsv"),
+    path_for_link("tables", "10_all_positive_cluster_markers.tsv"),
+    path_for_link("tables", "10_marker_expression_normalized_by_cluster.tsv"),
+    path_for_link("tables", "10_marker_expression_raw_counts_by_cluster.tsv"),
+    path_for_link("tables", "11_official_cluster_to_celltype_map.tsv"),
+    path_for_link("tables", "11_final_cell_metadata.tsv"),
+    path_for_link("tables", "12_figure_accessibility_index.tsv"),
+    path_for_link("tables", "12_object_state_history.tsv"),
+    path_for_link("objects", "pbmc3k_pre_annotation.rds"),
+    path_for_link("objects", "pbmc3k_final.rds"),
+    path_for_link("logs", "12_session_info.txt"),
+    path_for_link("figures", "png", "11_pbmc3k_umap_styled.png")
+  ),
+  stringsAsFactors = FALSE
+)
+
+if (!isTRUE(params$save_rds)) {
+  output_index <- output_index |>
+    dplyr::filter(!grepl("Seurat object", output))
+}
+
+output_index$download <- paste0(
+  "[Open or download](",
+  output_index$relative_path,
+  ")"
+)
+
+save_tsv(
+  output_index |>
+    dplyr::select(-download),
+  "00_output_index.tsv"
+)
+
+show_table(
+  output_index |>
+    dplyr::select(output, download),
+  "Key downloadable outputs",
+  digits = 0,
+  escape = FALSE
+)
+```
+
+```{r}
+#| label: 12-object-state-history-table
+#| echo: false
+
+show_table(
+  object_state_history,
+  "Seurat object-state checkpoints across the tutorial",
+  digits = 0,
+  link_label = "Download the object-state history",
+  link_path = path_for_link("tables", "12_object_state_history.tsv")
+)
+```
+
+Note: the clickable paths above are relative to the rendered document. The
+complete output directory is **`r output_dir`**.
+
+## Session information
+
+```{r}
+#| label: 12-session-information
+
+sessionInfo()
+```
+
+## Reproducible package locking
+
+After the vignette has rendered successfully in the intended environment, an
+`renv` lock file can preserve exact package versions. This is deliberately not
+executed automatically because environment management should be an explicit
+project-level action.
+
+```{r}
+#| label: 12-renv-snapshot
+#| eval: false
+
+renv::snapshot()
+```
+
+# Limitations and next analyses
+
+This is a one-sample teaching dataset. Cluster-marker testing is useful for
+annotation, but it is not a replicated differential-expression design. A real
+multi-sample study should retain donor and condition identifiers, evaluate batch
+structure, use replicate-aware pseudobulk models for biological contrasts, and
+base pathway or communication analyses on explicit comparisons.
+
+No doublet-removal branch, resolution grid, integration workflow, pathway
+analysis, or communication analysis is inserted here because those steps are
+not part of the official PBMC 3k core tutorial. Keeping them out prevents the
+accessible adaptation from silently becoming a different analysis.
+
+# Accessibility validation
+
+The HTML configuration enables Quarto's axe integration. For a visible local
+axe report, place the accompanying `_quarto-debug.yml` file in the project root
+and run:
+
+```bash
+quarto preview --profile debug scripts/pbmc3k_acc.qmd```
+
+Automated checks do not replace manual screen-reader testing. Before publishing,
+verify the following with JAWS and NVDA:
+
+1. Heading navigation follows the analytical order.
+2. Every figure announces its alternative text.
+3. Every displayed table announces a caption and correct column headers.
+4. Download links are keyboard reachable and have descriptive names.
+5. Code-copy controls do not interrupt heading and paragraph navigation.
+6. The same scientific conclusions can be reached without colour, shape,
+   density, or spatial inspection.
+7. The marker heatmap and UMAP remain understandable from their adjacent tables
+   and descriptions.
+8. No unexpected axe violations remain in the debug report.
