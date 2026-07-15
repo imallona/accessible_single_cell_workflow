@@ -14,7 +14,8 @@ format:
     df-print: kable
     fig-cap-location: bottom
     tbl-cap-location: top
-    axe: true
+    axe:
+      output: document
 
 execute:
   echo: true
@@ -24,8 +25,8 @@ execute:
   freeze: false
 
 params:
-  data_dir: "../data/hg19"
-  output_dir: "../analysis/output/pbmc3k_vignette_official"
+  data_dir: "../data/filtered_gene_bc_matrices/hg19"
+  output_dir: "../results/pbmc3k_acc"
   project_id: "pbmc3k"
   figure_dpi: 300
   save_pdf: true
@@ -67,12 +68,13 @@ position, or a heatmap by sight alone.
 
 This QMD is designed for the following fixed arrangement:
 
-1. Store this file as `scripts/pbmc3k_acc.qmd`.
-2. Store the filtered 10x matrix files in `data/hg19`.
+1. Store this file as `reports/pbmc3k_acc.qmd`.
+2. Store the filtered 10x matrix files in `data/filtered_gene_bc_matrices/hg19`.
 3. The matrix directory must contain `matrix.mtx` or `matrix.mtx.gz`,
    `barcodes.tsv` or `barcodes.tsv.gz`, and either `genes.tsv`,
    `features.tsv`, or a compressed equivalent.
-4. Results are written to `analysis/output/pbmc3k_accessible_official`.
+4. Results are written to `results/pbmc3k_acc`, which the rendered report links
+   to with relative paths.
 
 The input and output paths are declared once in the YAML parameters. The
 vignette does not search for alternative project roots or silently substitute
@@ -80,10 +82,12 @@ another directory.
 
 ## Obtain the PBMC 3k data
 
-Download the filtered PBMC 3k matrix from the
-[10x Genomics source used by the Seurat tutorial](https://cf.10xgenomics.com/samples/cell/pbmc3k/pbmc3k_filtered_gene_bc_matrices.tar.gz),
-extract it, and place the contents of the `hg19` directory at the path listed
-above.
+If you run the bundled Snakemake pipeline it downloads and extracts this data
+for you, so you can skip this step. To obtain the data by hand, download the
+filtered PBMC 3k matrix from the
+[10x Genomics source used by the Seurat tutorial](https://cf.10xgenomics.com/samples/cell/pbmc3k/pbmc3k_filtered_gene_bc_matrices.tar.gz)
+and extract it under `data/`, which produces
+`data/filtered_gene_bc_matrices/hg19` with the matrix files listed above.
 
 ## Required software
 
@@ -91,12 +95,17 @@ The vignette targets Seurat version 5. The live official tutorial was compiled
 with Seurat 5.5.0 and is published on the Seurat 5.5.1 website. The required R
 packages are `Seurat`, `dplyr`, `ggplot2`, `patchwork`, `Matrix`, and `knitr`.
 The optional `presto` package can accelerate Wilcoxon marker testing but is not
-required.
+required. If you run the bundled Snakemake pipeline with `--use-conda`, these
+packages and Quarto are installed automatically from `envs/single_cell.yaml`, so
+you can skip installing them by hand.
 
-Render from the project root with:
+Render the report with the following command. Quarto runs the document from its
+own `reports/` folder, so the relative paths above resolve regardless of where
+you invoke it:
 
 ```bash
-quarto render scripts/pbmc3k_acc.qmd```
+quarto render reports/pbmc3k_acc.qmd
+```
 
 For the same matrix used by the official tutorial, useful sanity checks are
 approximately 2,700 cells and 13,714 retained genes after object creation,
@@ -189,8 +198,8 @@ Sys.setenv(NO_COLOR = "1")
 # ---------------------------------------------------------------------------
 if (!exists("params")) {
   params <- list(
-    data_dir   = "../data/hg19",
-    output_dir = "../analysis/output/pbmc3k_vignette_official",
+    data_dir   = "../data/filtered_gene_bc_matrices/hg19",
+    output_dir = "../results/pbmc3k_acc",
     project_id = "pbmc3k",
     figure_dpi = 300,
     save_pdf   = TRUE,
@@ -203,16 +212,16 @@ if (!exists("params")) {
 }
 
 # Fail early, and in plain language, if the input data cannot be found.
-# When running interactively the working directory must be the `scripts`
+# When running interactively the working directory must be the `reports`
 # folder so that the relative path in `params$data_dir` resolves.
 if (!dir.exists(params$data_dir)) {
   stop(
     "Cannot find the input data directory '", params$data_dir, "'.\n",
     "  Current working directory: ", getwd(), "\n",
     "  If you are running interactively, set the working directory to the ",
-    "'scripts' folder first, for example setwd('scripts'), so that the ",
-    "relative path resolves. If you are rendering, run `quarto render` from ",
-    "the project root.",
+    "`reports` folder first, for example setwd('reports'), so that the relative ",
+    "path resolves. If you are rendering, run `quarto render reports/pbmc3k_acc.qmd`; ",
+    "Quarto uses the `reports` folder as the working directory.",
     call. = FALSE
   )
 }
@@ -1681,6 +1690,11 @@ These tests compare cells within one sample. Their adjusted p-values describe
 cluster separation in this dataset and are not evidence for a replicated
 condition-level comparison.
 
+To keep the report light enough to read and to scan for accessibility, the
+marker listing below shows only the top ten markers per cluster. The complete
+marker tables are not trimmed and are written to the downloadable TSV files
+linked from the table captions.
+
 ```{r}
 #| label: 10-find-markers
 
@@ -1699,9 +1713,11 @@ head(cluster5.markers, n = 5)
 # Find markers for every cluster compared with all remaining cells.
 pbmc.markers <- FindAllMarkers(pbmc, only.pos = TRUE)
 
+# show up to ten markers per cluster inline; the full table is saved to TSV
 pbmc.markers |>
   dplyr::group_by(cluster) |>
-  dplyr::filter(avg_log2FC > 1)
+  dplyr::filter(avg_log2FC > 1) |>
+  dplyr::slice_head(n = 10)
 ```
 
 ```{r}
@@ -2681,12 +2697,17 @@ accessible adaptation from silently becoming a different analysis.
 
 # Accessibility validation
 
-The HTML configuration enables Quarto's axe integration. For a visible local
-axe report, place the accompanying `_quarto-debug.yml` file in the project root
-and run:
+This report enables Quarto's built-in axe accessibility engine
+(`axe: output: document`), which runs in the browser and appends its findings to
+the end of the page. Serve the report and open it in a browser to see them, for
+example:
 
 ```bash
-quarto preview --profile debug scripts/pbmc3k_acc.qmd```
+quarto preview reports/pbmc3k_acc.qmd
+```
+
+The scan runs over the whole page, so inline tables are kept short and the full
+data for each result is offered as a downloadable table.
 
 Automated checks do not replace manual screen-reader testing. Before publishing,
 verify the following with JAWS and NVDA:

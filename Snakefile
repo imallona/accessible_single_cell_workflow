@@ -10,10 +10,19 @@ RESULTS_DIR = config["results_dir"]
 LOG_DIR = config["log_dir"]
 MATRIX_DIR = os.path.join(DATA_DIR, config["matrix_subdir"])
 TARBALL = os.path.join(DATA_DIR, "pbmc3k_filtered_gene_bc_matrices.tar.gz")
+QMD = config["qmd"]
+REPORT_NAME = config["report_name"]
+# the report renders in place next to the qmd so its relative download links resolve
+REPORT_HTML = os.path.join(REPORTS_DIR, REPORT_NAME + ".html")
+# where the vignette writes its tables, figures, objects and per-step logs
+ANALYSIS_DIR = os.path.join(RESULTS_DIR, REPORT_NAME)
+# quarto runs the qmd with its own folder as the working directory, so output_dir
+# must be relative to that folder for the report's download links to resolve
+ANALYSIS_DIR_REL = os.path.relpath(ANALYSIS_DIR, start=REPORTS_DIR)
 
 rule all:
     input:
-        os.path.join(RESULTS_DIR, "pbmc3k.html")
+        REPORT_HTML
 
 rule download:
     """Downloads the PBMC3K data"""
@@ -37,15 +46,14 @@ rule download:
         """
 
 rule render_report:
-    """Renders the PBMC report via quarto"""
+    """Renders the accessible PBMC3k Seurat vignette via quarto"""
     input:
-        qmd = os.path.join(REPORTS_DIR, "pbmc3k.qmd"),
+        qmd = QMD,
         matrix_dir = MATRIX_DIR
     output:
-        html = os.path.join(RESULTS_DIR, "pbmc3k.html")
+        html = REPORT_HTML
     params:
-        results_dir = RESULTS_DIR,
-        reports_dir = REPORTS_DIR
+        analysis_dir_rel = ANALYSIS_DIR_REL
     log:
         os.path.join(LOG_DIR, "render.log")
     conda:
@@ -54,9 +62,25 @@ rule render_report:
         """
         echo "Rendering {input.qmd}" > {log}
         NO_COLOR=1 quarto render {input.qmd} \
-            --output-dir $(pwd)/{params.results_dir} \
-            -P matrix_dir:$(pwd)/{input.matrix_dir} 2>&1 \
+            -P data_dir:$(pwd)/{input.matrix_dir} \
+            -P output_dir:{params.analysis_dir_rel} 2>&1 \
             | sed -r 's/\\x1b\\[[0-9;]*m//g' >> {log}
-        rm -rf {params.reports_dir}/pbmc3k_files
         echo "Success" >> {log}
+        """
+
+rule preview:
+    """Serve the report with a live browser preview so the axe accessibility check
+    runs. Run with: snakemake preview --use-conda"""
+    input:
+        qmd = QMD,
+        matrix_dir = MATRIX_DIR
+    params:
+        analysis_dir_rel = ANALYSIS_DIR_REL
+    conda:
+        "envs/single_cell.yaml"
+    shell:
+        """
+        quarto preview {input.qmd} \
+            -P data_dir:$(pwd)/{input.matrix_dir} \
+            -P output_dir:{params.analysis_dir_rel}
         """

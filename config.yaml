@@ -5,3 +5,7 @@ reports_dir: "reports"
 results_dir: "results"
 log_dir: "logs"
 matrix_subdir: "filtered_gene_bc_matrices/hg19"
+
+# the accessible, screen-reader-friendly Seurat vignette rendered by quarto
+qmd: "reports/pbmc3k_acc.qmd"
+report_name: "pbmc3k_acc"

@@ -9,3 +9,6 @@ dependencies:
   - bioconductor-singlecellexperiment=1.32.0
   - quarto=1.9.38
   - r-knitr=1.51
+  - r-dplyr
+  - r-ggplot2
+  - r-patchwork
