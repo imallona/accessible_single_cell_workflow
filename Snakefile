@@ -1,7 +1,5 @@
 import os
 
-# the path to the yaml containing the PBMC3k data URL and other configs,
-#  such as output paths
 configfile: "config.yaml"
 
 DATA_DIR = config["data_dir"]
@@ -12,22 +10,16 @@ MATRIX_DIR = os.path.join(DATA_DIR, config["matrix_subdir"])
 TARBALL = os.path.join(DATA_DIR, "pbmc3k_filtered_gene_bc_matrices.tar.gz")
 QMD = config["qmd"]
 REPORT_NAME = config["report_name"]
-# the report renders in place next to the qmd so its relative download links resolve
+# next to the qmd so the report's relative download links resolve
 REPORT_HTML = os.path.join(REPORTS_DIR, REPORT_NAME + ".html")
-# html and pdf are built by two separate rules. The html keeps the live axe
-# check; the pdf is the portable form for submission and Zenodo.
 REPORT_PDF = os.path.join(REPORTS_DIR, REPORT_NAME + ".pdf")
-# where the vignette writes its tables, figures, objects and per-step logs
 ANALYSIS_DIR = os.path.join(RESULTS_DIR, REPORT_NAME)
-# quarto runs the qmd with its own folder as the working directory, so output_dir
-# must be relative to that folder for the report's download links to resolve
+# relative to the qmd's folder (quarto's working dir) so download links resolve
 ANALYSIS_DIR_REL = os.path.relpath(ANALYSIS_DIR, start=REPORTS_DIR)
-# marker that veraPDF is installed; render_pdf depends on it so quarto validates
-# the pdf against its pdf-standard during the build
+# render_pdf depends on this so veraPDF validates the pdf during the build
 VERAPDF_MARKER = os.path.join(LOG_DIR, ".verapdf_installed")
 
-# the default build is the html report. The pdf is opt-in: build it with
-# snakemake reports/pbmc3k_acc.pdf
+# default builds html; pdf is opt-in (snakemake reports/pbmc3k_acc.pdf)
 rule all:
     input:
         REPORT_HTML
@@ -54,7 +46,7 @@ rule download:
         """
 
 rule install_verapdf:
-    """Installs veraPDF so render_pdf validates the pdf against its pdf-standard."""
+    """Installs veraPDF so render_pdf validates the pdf."""
     output:
         marker = touch(VERAPDF_MARKER)
     conda:
@@ -63,8 +55,7 @@ rule install_verapdf:
         "quarto install verapdf --no-prompt"
 
 rule render_html:
-    """Renders the vignette to html. It links to the tables it writes under
-    results/."""
+    """Renders the vignette to html."""
     input:
         qmd = QMD,
         matrix_dir = MATRIX_DIR
@@ -89,9 +80,8 @@ rule render_html:
         """
 
 rule render_pdf:
-    """Renders the vignette to a tagged pdf with typst (no LaTeX). Takes the html
-    as input to run after render_html, so the two never write results/ at once (a
-    race under --cores 2 or more). veraPDF validates the pdf against pdf-standard."""
+    """Renders the vignette to a tagged pdf with typst. Runs after render_html
+    (html as input) so both never write results/ at once (race at --cores>1)."""
     input:
         qmd = QMD,
         matrix_dir = MATRIX_DIR,
