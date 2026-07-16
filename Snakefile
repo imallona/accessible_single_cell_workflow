@@ -14,12 +14,20 @@ QMD = config["qmd"]
 REPORT_NAME = config["report_name"]
 # the report renders in place next to the qmd so its relative download links resolve
 REPORT_HTML = os.path.join(REPORTS_DIR, REPORT_NAME + ".html")
+# html and pdf are built by two separate rules. The html keeps the live axe
+# check; the pdf is the portable form for submission and Zenodo.
+REPORT_PDF = os.path.join(REPORTS_DIR, REPORT_NAME + ".pdf")
 # where the vignette writes its tables, figures, objects and per-step logs
 ANALYSIS_DIR = os.path.join(RESULTS_DIR, REPORT_NAME)
 # quarto runs the qmd with its own folder as the working directory, so output_dir
 # must be relative to that folder for the report's download links to resolve
 ANALYSIS_DIR_REL = os.path.relpath(ANALYSIS_DIR, start=REPORTS_DIR)
+# marker that veraPDF is installed; render_pdf depends on it so quarto validates
+# the pdf against its pdf-standard during the build
+VERAPDF_MARKER = os.path.join(LOG_DIR, ".verapdf_installed")
 
+# the default build is the html report. The pdf is opt-in: build it with
+# snakemake reports/pbmc3k_acc.pdf
 rule all:
     input:
         REPORT_HTML
@@ -45,8 +53,18 @@ rule download:
         }} > {log} 2>&1
         """
 
-rule render_report:
-    """Renders the accessible PBMC3k Seurat vignette via quarto"""
+rule install_verapdf:
+    """Installs veraPDF so render_pdf validates the pdf against its pdf-standard."""
+    output:
+        marker = touch(VERAPDF_MARKER)
+    conda:
+        "envs/single_cell.yaml"
+    shell:
+        "quarto install verapdf --no-prompt"
+
+rule render_html:
+    """Renders the vignette to html. It links to the tables it writes under
+    results/."""
     input:
         qmd = QMD,
         matrix_dir = MATRIX_DIR
@@ -55,22 +73,52 @@ rule render_report:
     params:
         analysis_dir_rel = ANALYSIS_DIR_REL
     log:
-        os.path.join(LOG_DIR, "render.log")
+        os.path.join(LOG_DIR, "render_html.log")
     conda:
         "envs/single_cell.yaml"
     shell:
         """
-        echo "Rendering {input.qmd}" > {log}
-        NO_COLOR=1 quarto render {input.qmd} \
+        echo "Rendering {input.qmd} to html" | tee {log}
+        NO_COLOR=1 quarto render {input.qmd} --to html \
             -P data_dir:$(pwd)/{input.matrix_dir} \
             -P output_dir:{params.analysis_dir_rel} 2>&1 \
-            | sed -r 's/\\x1b\\[[0-9;]*m//g' >> {log}
-        echo "Success" >> {log}
+            | sh scripts/clean_log.sh | tee -a {log}
+        rc=${{PIPESTATUS[0]}}
+        [ "$rc" -eq 0 ] || {{ echo "render failed (exit $rc)" | tee -a {log}; exit "$rc"; }}
+        echo "Success" | tee -a {log}
+        """
+
+rule render_pdf:
+    """Renders the vignette to a tagged pdf with typst (no LaTeX). Takes the html
+    as input to run after render_html, so the two never write results/ at once (a
+    race under --cores 2 or more). veraPDF validates the pdf against pdf-standard."""
+    input:
+        qmd = QMD,
+        matrix_dir = MATRIX_DIR,
+        html = REPORT_HTML,
+        verapdf = VERAPDF_MARKER
+    output:
+        pdf = REPORT_PDF
+    params:
+        analysis_dir_rel = ANALYSIS_DIR_REL
+    log:
+        os.path.join(LOG_DIR, "render_pdf.log")
+    conda:
+        "envs/single_cell.yaml"
+    shell:
+        """
+        echo "Rendering {input.qmd} to pdf" | tee {log}
+        NO_COLOR=1 quarto render {input.qmd} --to typst \
+            -P data_dir:$(pwd)/{input.matrix_dir} \
+            -P output_dir:{params.analysis_dir_rel} 2>&1 \
+            | sh scripts/clean_log.sh | tee -a {log}
+        rc=${{PIPESTATUS[0]}}
+        [ "$rc" -eq 0 ] || {{ echo "render failed (exit $rc)" | tee -a {log}; exit "$rc"; }}
+        echo "Success" | tee -a {log}
         """
 
 rule preview:
-    """Serve the report with a live browser preview so the axe accessibility check
-    runs. Run with: snakemake preview --use-conda"""
+    """Live preview server for the browser axe check. Run: snakemake preview --use-conda"""
     input:
         qmd = QMD,
         matrix_dir = MATRIX_DIR
@@ -82,5 +130,6 @@ rule preview:
         """
         quarto preview {input.qmd} \
             -P data_dir:$(pwd)/{input.matrix_dir} \
-            -P output_dir:{params.analysis_dir_rel}
+            -P output_dir:{params.analysis_dir_rel} 2>&1 \
+            | sh scripts/clean_log.sh
         """

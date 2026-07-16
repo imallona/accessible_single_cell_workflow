@@ -16,6 +16,20 @@ format:
     tbl-cap-location: top
     axe:
       output: document
+  typst:
+    # typst is bundled with quarto and auto-tags the pdf, so no LaTeX is needed.
+    # ua-1 is PDF/UA-1 (accessibility), which requires tagging. typst renders one
+    # substandard at a time, so archival PDF/A (a-2b) cannot be combined here;
+    # accessibility is the goal, so ua-1 wins. ua-1 is the typst spelling; the
+    # LaTeX path uses ua-2. Validate with veraPDF: run `quarto install verapdf`
+    # once, then quarto checks each render.
+    pdf-standard: ua-1
+    toc: true
+    toc-depth: 3
+    section-numbering: "1.1.1"
+    df-print: kable
+    fig-cap-location: bottom
+    tbl-cap-location: top
 
 execute:
   echo: true
@@ -320,13 +334,26 @@ show_table <- function(
   )
 
   if (!is.null(link_label) && !is.null(link_path)) {
+    if (knitr::is_html_output()) {
+      link_text <- paste0("[", link_label, "](", link_path, ")")
+    } else {
+      # a relative file link does not resolve in a distributed pdf, so name the
+      # file and show its path. "download" makes no sense on a page, so the label
+      # switches to "Find".
+      label <- sub("^Download\\b", "Find", link_label)
+      link_text <- paste0(label, ": `", sub("^\\.\\./", "", link_path), "`")
+    }
+    table_text <- paste0(table_text, "\n\n", link_text)
+  }
+
+  # wide tables overlap their columns in the fixed-width pdf. turn the typst page
+  # landscape so they fit. the tag tree keeps the reading order, so a screen
+  # reader is unaffected by the rotation.
+  if (identical(knitr::pandoc_to(), "typst") && ncol(x) >= 8) {
     table_text <- paste0(
+      "```{=typst}\n#page(flipped: true)[\n```\n\n",
       table_text,
-      "\n\n[",
-      link_label,
-      "](",
-      link_path,
-      ")"
+      "\n\n```{=typst}\n]\n```"
     )
   }
 
@@ -2628,11 +2655,16 @@ if (!isTRUE(params$save_rds)) {
     dplyr::filter(!grepl("Seurat object", output))
 }
 
-output_index$download <- paste0(
-  "[Open or download](",
-  output_index$relative_path,
-  ")"
-)
+if (knitr::is_html_output()) {
+  output_index$download <- paste0(
+    "[Open or download](",
+    output_index$relative_path,
+    ")"
+  )
+} else {
+  # relative links do not resolve in a distributed pdf; show the path as text
+  output_index$download <- paste0("`", sub("^\\.\\./", "", output_index$relative_path), "`")
+}
 
 save_tsv(
   output_index |>
@@ -2640,10 +2672,19 @@ save_tsv(
   "00_output_index.tsv"
 )
 
+index_display <- output_index |>
+  dplyr::select(output, download)
+if (knitr::is_html_output()) {
+  index_caption <- "Key downloadable outputs"
+} else {
+  # in the pdf the column holds a path, not a link
+  names(index_display)[names(index_display) == "download"] <- "stored in"
+  index_caption <- "Key output files"
+}
+
 show_table(
-  output_index |>
-    dplyr::select(output, download),
-  "Key downloadable outputs",
+  index_display,
+  index_caption,
   digits = 0,
   escape = FALSE
 )
@@ -2662,8 +2703,8 @@ show_table(
 )
 ```
 
-Note: the clickable paths above are relative to the rendered document. The
-complete output directory is **`r output_dir`**.
+Note: the paths above are relative to the rendered document and are clickable in
+the html report. The complete output directory is **`r output_dir`**.
 
 ## Session information
 
