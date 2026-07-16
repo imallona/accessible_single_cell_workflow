@@ -9,3 +9,4 @@
 - PDF download links show as plain file paths; the html keeps clickable links.
 - Wide tables, 8 or more columns, render on their own landscape pages in the pdf.
 - Added `scripts/clean_log.sh`. It strips colour codes and progress bars from the render and preview output, keeping the chunk counters, messages, and warnings. The render rules write the cleaned stream to both the console and the log file.
+- The axe accessibility check is opt-in. The default html render omits it; `snakemake preview` enables it by passing `--metadata-file reports/axe.yml`.

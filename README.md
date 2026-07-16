@@ -35,14 +35,14 @@ The default build is the html report; the pdf is opt-in. The pdf rule reruns the
 
 ### Accessibility check
 
-The report embeds Quarto's axe accessibility check (`axe: output: document`). It runs in the browser and needs the page served over http, not opened as a local file. Serve it one of these ways, then scroll to the bottom of the page, where axe appends its findings:
+Quarto's axe accessibility check is opt-in. `snakemake preview` enables it by passing `--metadata-file reports/axe.yml`. It runs in the browser and needs the page served over http, not opened as a local file. Serve it one of these ways, then scroll to the bottom of the page, where axe appends its findings:
 
 ```sh
 # with the pinned conda environment, via snakemake: re-renders, then serves live
 snakemake preview --use-conda
 
 # or with Quarto directly, if quarto is on your PATH
-quarto preview reports/pbmc3k_acc.qmd
+quarto preview reports/pbmc3k_acc.qmd --metadata-file reports/axe.yml
 
 # or serve the already-built report with any static server, no Quarto needed
 python -m http.server   # then open http://localhost:8000/reports/pbmc3k_acc.html

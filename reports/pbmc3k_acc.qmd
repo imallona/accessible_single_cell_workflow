@@ -14,8 +14,6 @@ format:
     df-print: kable
     fig-cap-location: bottom
     tbl-cap-location: top
-    axe:
-      output: document
   typst:
     # typst is bundled with quarto and auto-tags the pdf, so no LaTeX is needed.
     # ua-1 is PDF/UA-1 (accessibility), which requires tagging. typst renders one
@@ -2743,13 +2741,16 @@ accessible adaptation from silently becoming a different analysis.
 
 # Accessibility validation
 
-This report enables Quarto's built-in axe accessibility engine
-(`axe: output: document`), which runs in the browser and appends its findings to
-the end of the page. Serve the report and open it in a browser to see them, for
-example:
+Quarto's built-in axe accessibility engine runs in the browser and appends its
+findings to the end of the page. It is off by default and turned on when the
+report is served with `--metadata-file axe.yml`; the `snakemake preview` rule
+does this. Serve the report over http and open it in a browser to see the
+findings, for example:
 
 ```bash
-quarto preview reports/pbmc3k_acc.qmd
+snakemake preview --use-conda
+# or directly:
+quarto preview reports/pbmc3k_acc.qmd --metadata-file reports/axe.yml
 ```
 
 The scan runs over the whole page, so inline tables are kept short and the full

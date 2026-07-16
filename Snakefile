@@ -118,7 +118,7 @@ rule preview:
         "envs/single_cell.yaml"
     shell:
         """
-        quarto preview {input.qmd} \
+        quarto preview {input.qmd} --metadata-file reports/axe.yml \
             -P data_dir:$(pwd)/{input.matrix_dir} \
             -P output_dir:{params.analysis_dir_rel} 2>&1 \
             | sh scripts/clean_log.sh
