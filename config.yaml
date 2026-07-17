@@ -9,3 +9,8 @@ matrix_subdir: "filtered_gene_bc_matrices/hg19"
 # the accessible, screen-reader-friendly Seurat vignette rendered by quarto
 qmd: "reports/pbmc3k_acc.qmd"
 report_name: "pbmc3k_acc"
+
+# report format for the default target, "html" or "pdf". only one builds per
+# invocation, so the renders never race on results/. override with
+# snakemake --config output_format=pdf
+output_format: "html"

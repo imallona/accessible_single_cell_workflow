@@ -24,14 +24,17 @@ Outputs:
 # the html report, the default target
 snakemake --cores 1 --use-conda
 
-# the pdf report (tagged PDF/UA-1, built with Typst); builds the html first
+# the pdf report (tagged PDF/UA-1, built with Typst), by config
+snakemake --cores 1 --use-conda --config output_format=pdf
+
+# the pdf report, by naming the file instead
 snakemake --cores 1 --use-conda reports/pbmc3k_acc.pdf
 
 # only the data
 snakemake --cores 1 --use-conda data/filtered_gene_bc_matrices/hg19
 ```
 
-The default build is the html report; the pdf is opt-in. The pdf rule reruns the analysis and rewrites the same tables under `results/` as the html rule, so it takes the html report as an input and runs after it. That keeps the two from writing `results/` at the same time under `--cores 2` or more.
+The default target builds one report, set by `output_format` (`html` or `pdf`, default `html`). Both render rules rewrite the same tables under `results/`, so only one runs per invocation. Naming both report files at `--cores 2` or higher risks a race condition there; `--cores 1` avoids it.
 
 ### Accessibility check
 
@@ -54,6 +57,7 @@ Some style choices in this report are there for accessibility.
 
 - Link colour. `reports/custom.scss` sets links to a dark blue (about 7:1 on white), high contrast.
 - Wrapped output. Long code output and messages are wrapped instead of put in a horizontal scroll boxes. A scroll box needs a mouse to reach, and a screen reader gives no sign that content continues off-screen.
+- No hyphenation in the pdf. `#set text(hyphenate: false)` keeps words whole; a word split at a line break ("tuto-rial") reads as two fragments to a screen reader.
 - Named table columns. The tables carry the row identifier, a cell or a gene, in a named column. A data frame printed with row names leaves the first header blank, which a screen reader reads as an unlabelled column.
 - Long tables are avoided.
 - Clean render logs. `scripts/clean_log.sh` strips ANSI colour codes and the carriage-return progress bars that redraw in place, keeping the chunk counters, messages, and warnings. The render rules `tee` the cleaned stream to both the console and the log file, and `snakemake preview` streams it live. The bars are the repeated asterisks and equals signs that clutter a log read by a screen reader.

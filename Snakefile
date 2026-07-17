@@ -19,10 +19,23 @@ ANALYSIS_DIR_REL = os.path.relpath(ANALYSIS_DIR, start=REPORTS_DIR)
 # render_pdf depends on this so veraPDF validates the pdf during the build
 VERAPDF_MARKER = os.path.join(LOG_DIR, ".verapdf_installed")
 
-# default builds html; pdf is opt-in (snakemake reports/pbmc3k_acc.pdf)
+REPORT_BY_FORMAT = {"html": REPORT_HTML, "pdf": REPORT_PDF}
+OUTPUT_FORMAT = config.get("output_format", "html")
+if OUTPUT_FORMAT not in REPORT_BY_FORMAT:
+    raise ValueError(
+        "output_format must be 'html' or 'pdf', got '{}'".format(OUTPUT_FORMAT)
+    )
+
+# render_html and render_pdf both rewrite the same results/ files, so running
+# both at once races. rule all builds one report, chosen by output_format
+# (default html):
+#   snakemake --config output_format=pdf
+# this guards the default target only. naming both formats in one run at
+# --cores>1 (snakemake reports/x.html reports/x.pdf) can still race; at
+# --cores 1 jobs run one at a time, so no race.
 rule all:
     input:
-        REPORT_HTML
+        branch(OUTPUT_FORMAT, cases=REPORT_BY_FORMAT)
 
 rule download:
     """Downloads the PBMC3K data"""
@@ -80,12 +93,11 @@ rule render_html:
         """
 
 rule render_pdf:
-    """Renders the vignette to a tagged pdf with typst. Runs after render_html
-    (html as input) so both never write results/ at once (race at --cores>1)."""
+    """Renders the vignette to a tagged pdf with typst. Independent of
+    render_html; rule all builds one format per invocation."""
     input:
         qmd = QMD,
         matrix_dir = MATRIX_DIR,
-        html = REPORT_HTML,
         verapdf = VERAPDF_MARKER
     output:
         pdf = REPORT_PDF

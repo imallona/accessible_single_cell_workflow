@@ -22,6 +22,11 @@ format:
     # LaTeX path uses ua-2. Validate with veraPDF: run `quarto install verapdf`
     # once, then quarto checks each render.
     pdf-standard: ua-1
+    # Disable hyphenation everywhere, including the title. A word split at a line
+    # break ("tuto-rial") is read as two fragments by a screen reader.
+    include-in-header:
+      text: |
+        #set text(hyphenate: false)
     toc: true
     toc-depth: 3
     section-numbering: "1.1.1"
@@ -45,7 +50,7 @@ params:
   save_rds: true
 ---
 
-# Purpose and tutorial 
+# Purpose and tutorial
 
 This vignette reproduces the analytical sequence, marker examples, cell-type
 mapping, and displayed plot families of the current official Seurat PBMC 3k
