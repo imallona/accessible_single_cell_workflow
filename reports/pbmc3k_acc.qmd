@@ -27,11 +27,12 @@ format:
     include-in-header:
       text: |
         #set text(hyphenate: false)
-    # Number pages so the footer reads "page 1", "page 2", ... The literal
-    # "page " prints on every page and the counter fills the number. This
-    # quarto option drives typst's own #set page(numbering: ...), which would
-    # override the same rule placed in include-in-header.
-    page-numbering: "page 1"
+        // Footer reads "page 1", "page 2", ... A numbering pattern string cannot
+        // hold the literal word "page" (the letter "a" is a counter symbol), so
+        // the spoken "page" prefix is added in a custom footer. quarto's
+        // page-numbering below still drives the page counter and the TOC.
+        #set page(footer: context align(center)[page #counter(page).display("1")])
+    page-numbering: "1"
     toc: true
     toc-depth: 3
     section-numbering: "1.1.1"

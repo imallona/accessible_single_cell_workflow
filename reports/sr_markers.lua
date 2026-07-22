@@ -15,13 +15,14 @@
 --
 -- Each writer hides the text its own way:
 --   HTML  visually-hidden span (.sr-only in custom.scss), present in the a11y tree.
---   typst tiny white text in a zero-spacing block. typst tags text as it is
---         drawn and has no separate accessibility tree, so the marker must be
---         drawn to enter the PDF reading order; it cannot be hidden the way the
---         HTML span is. 0.1pt white ink on the white body is visually
---         imperceptible and the zero-spacing block keeps the layout unchanged,
---         but the text is still selectable and copyable from the PDF. This is a
---         known typst limitation, not a bug.
+--   typst 0.1pt white text in a zero-height, clipped block. typst tags text as
+--         it is drawn and has no separate accessibility tree, so the marker must
+--         be drawn to enter the PDF reading order; it cannot be hidden the way
+--         the HTML span is. 0.1pt white ink is visually imperceptible and the
+--         zero-height clipped block adds no visible line. The block keeps its
+--         default (weak) spacing rather than forcing it to zero: forcing zero
+--         collapsed the gap between a cell output and the following paragraph,
+--         making them bleed together. This is a known typst limitation, not a bug.
 
 local function has_class(el, name)
   for _, c in ipairs(el.classes) do
@@ -36,9 +37,9 @@ local function markers(label)
   local html_end = pandoc.RawBlock("html",
     '<span class="sr-only">end ' .. label .. '</span>')
   local typst_start = pandoc.RawBlock("typst",
-    '#block(spacing: 0pt, above: 0pt, below: 0pt)[#text(size: 0.1pt, fill: white)[start ' .. label .. ']]')
+    '#block(height: 0pt, clip: true)[#text(size: 0.1pt, fill: white)[start ' .. label .. ']]')
   local typst_end = pandoc.RawBlock("typst",
-    '#block(spacing: 0pt, above: 0pt, below: 0pt)[#text(size: 0.1pt, fill: white)[end ' .. label .. ']]')
+    '#block(height: 0pt, clip: true)[#text(size: 0.1pt, fill: white)[end ' .. label .. ']]')
   return { html_start, typst_start }, { html_end, typst_end }
 end
 
