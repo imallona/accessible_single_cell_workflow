@@ -20,3 +20,19 @@ pre,
 .cell-output pre {
   overflow: visible;
 }
+
+// Visually hidden but present in the accessibility tree, so a screen reader
+// announces the "start code"/"end code"/"start output"/"end output" boundaries
+// added by sr_markers.lua while the text takes no visible space. Defined here
+// rather than relying on Bootstrap's own .visually-hidden existing.
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

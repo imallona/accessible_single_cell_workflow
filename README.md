@@ -62,6 +62,10 @@ Some style choices in this report are there for accessibility.
 - Long tables are avoided.
 - Clean render logs. `scripts/clean_log.sh` strips ANSI colour codes and the carriage-return progress bars that redraw in place, keeping the chunk counters, messages, and warnings. The render rules `tee` the cleaned stream to both the console and the log file, and `snakemake preview` streams it live. The bars are the repeated asterisks and equals signs that clutter a log read by a screen reader.
 
+## Zenodo deposit
+
+`zenodo_metadata.R` deposits this code on Zenodo with its metadata; edit the config block at the top before running.
+
 ## License
 
 MIT, see `LICENSE`.
