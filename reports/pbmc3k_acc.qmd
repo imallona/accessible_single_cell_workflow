@@ -27,9 +27,11 @@ format:
     include-in-header:
       text: |
         #set text(hyphenate: false)
-        # Number pages so the footer reads "page 1", "page 2", ...; the literal
-        # "page " prints on every page and the counter fills the number.
-        #set page(numbering: "page 1")
+    # Number pages so the footer reads "page 1", "page 2", ... The literal
+    # "page " prints on every page and the counter fills the number. This
+    # quarto option drives typst's own #set page(numbering: ...), which would
+    # override the same rule placed in include-in-header.
+    page-numbering: "page 1"
     toc: true
     toc-depth: 3
     section-numbering: "1.1.1"
