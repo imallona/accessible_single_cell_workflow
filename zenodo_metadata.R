@@ -5,7 +5,7 @@
 ## CONFIG: update both values before running.
 ## zenodo_token needs the deposit:write and deposit:actions scopes.
 ## Add sandbox = TRUE to ZenodoManager$new() to target sandbox.zenodo.org.
-zenodo_token <- "updateme"
+zenodo_token <- Sys.getenv("ZENODO_TOKEN")
 archive_path <- "/tmp/updateme.zip"
 
 library(zen4R)
@@ -61,6 +61,9 @@ myrec <- zenodo$depositRecord(myrec)
 
 # At least one file is required before a record can be published.
 zenodo$uploadFile(archive_path, record = myrec)
+
+print(myrec$getDOI())
+print(myrec$getConceptDOI())
 
 # Irreversible once run: a published record cannot be deleted and its files
 # cannot be changed. Uncomment when the metadata and file are confirmed correct.
