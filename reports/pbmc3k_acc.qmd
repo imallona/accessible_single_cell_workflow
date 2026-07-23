@@ -14,37 +14,8 @@ format:
     df-print: kable
     fig-cap-location: bottom
     tbl-cap-location: top
-  typst:
-    # typst is bundled with quarto and auto-tags the pdf, so no LaTeX is needed.
-    # ua-1 is PDF/UA-1 (accessibility), which requires tagging. typst renders one
-    # substandard at a time, so archival PDF/A (a-2b) cannot be combined here;
-    # accessibility is the goal, so ua-1 wins. ua-1 is the typst spelling; the
-    # LaTeX path uses ua-2. Validate with veraPDF: run `quarto install verapdf`
-    # once, then quarto checks each render.
-    pdf-standard: ua-1
-    # Disable hyphenation everywhere, including the title. A word split at a line
-    # break ("tuto-rial") is read as two fragments by a screen reader.
-    include-in-header:
-      text: |
-        #set text(hyphenate: false)
-        // Footer reads "page 1", "page 2", ... A numbering pattern string cannot
-        // hold the literal word "page" (the letter "a" is a counter symbol), so
-        // the spoken "page" prefix is added in a custom footer. quarto's
-        // page-numbering below still drives the page counter and the TOC.
-        #set page(footer: context align(center)[page #counter(page).display("1")])
-    page-numbering: "1"
-    toc: true
-    toc-depth: 3
-    section-numbering: "1.1.1"
-    df-print: kable
-    fig-cap-location: bottom
-    tbl-cap-location: top
-
-# Screen-reader-only "start code"/"end code"/"start output"/"end output"
-# boundaries around every executed code cell and its output. Hidden in HTML,
-# tiny near-invisible text in the pdf. See reports/sr_markers.lua.
-filters:
-  - sr_markers.lua
+    axe:
+      output: document
 
 execute:
   echo: true
@@ -62,7 +33,7 @@ params:
   save_rds: true
 ---
 
-# Purpose and tutorial
+# Purpose and tutorial 
 
 This vignette reproduces the analytical sequence, marker examples, cell-type
 mapping, and displayed plot families of the current official Seurat PBMC 3k
@@ -293,6 +264,39 @@ path_for_link <- function(...) {
   gsub("\\\\", "/", path)
 }
 
+object_state_history_path <- file.path(
+  table_dir,
+  "12_object_state_history.tsv"
+)
+
+legacy_object_state_paths <- file.path(
+  table_dir,
+  c(
+    "01_object_state.tsv",
+    "06_object_state_after_pca.tsv",
+    "08_object_state_after_clustering.tsv",
+    "09_object_state_after_umap.tsv",
+    "11_object_state_after_annotation.tsv"
+  )
+)
+
+object_state_run_started_at <- Sys.time()
+object_state_run_id <- paste(
+  params$project_id,
+  format(
+    object_state_run_started_at,
+    format = "%Y%m%dT%H%M%SZ",
+    tz = "UTC"
+  ),
+  paste0("pid", Sys.getpid()),
+  sep = "_"
+)
+
+unlink(
+  legacy_object_state_paths,
+  force = TRUE
+)
+
 save_tsv <- function(x, filename, rowname_column = NULL) {
   x <- as.data.frame(x, stringsAsFactors = FALSE, check.names = FALSE)
 
@@ -349,26 +353,13 @@ show_table <- function(
   )
 
   if (!is.null(link_label) && !is.null(link_path)) {
-    if (knitr::is_html_output()) {
-      link_text <- paste0("[", link_label, "](", link_path, ")")
-    } else {
-      # a relative file link does not resolve in a distributed pdf, so name the
-      # file and show its path. "download" makes no sense on a page, so the label
-      # switches to "Find".
-      label <- sub("^Download\\b", "Find", link_label)
-      link_text <- paste0(label, ": `", sub("^\\.\\./", "", link_path), "`")
-    }
-    table_text <- paste0(table_text, "\n\n", link_text)
-  }
-
-  # wide tables overlap their columns in the fixed-width pdf. turn the typst page
-  # landscape so they fit. the tag tree keeps the reading order, so a screen
-  # reader is unaffected by the rotation.
-  if (identical(knitr::pandoc_to(), "typst") && ncol(x) >= 8) {
     table_text <- paste0(
-      "```{=typst}\n#page(flipped: true)[\n```\n\n",
       table_text,
-      "\n\n```{=typst}\n]\n```"
+      "\n\n[",
+      link_label,
+      "](",
+      link_path,
+      ")"
     )
   }
 
@@ -446,11 +437,23 @@ summarise_numeric_metric <- function(values, metric, stage) {
   )
 }
 
-object_state <- function(object, checkpoint) {
+object_state <- function(object, analysis_stage, checkpoint) {
   assay_name <- DefaultAssay(object)
   identity_levels <- levels(Idents(object))
 
   data.frame(
+    run_id = object_state_run_id,
+    run_started_at_utc = format(
+      object_state_run_started_at,
+      format = "%Y-%m-%dT%H:%M:%SZ",
+      tz = "UTC"
+    ),
+    recorded_at_utc = format(
+      Sys.time(),
+      format = "%Y-%m-%dT%H:%M:%SZ",
+      tz = "UTC"
+    ),
+    analysis_stage = analysis_stage,
     checkpoint = checkpoint,
     cells = ncol(object),
     genes = nrow(object),
@@ -471,6 +474,65 @@ object_state <- function(object, checkpoint) {
     active_identities = paste(identity_levels, collapse = ", "),
     stringsAsFactors = FALSE
   )
+}
+
+append_object_state <- function(object, analysis_stage, checkpoint) {
+  state <- object_state(
+    object = object,
+    analysis_stage = analysis_stage,
+    checkpoint = checkpoint
+  )
+
+  history_exists <- file.exists(object_state_history_path) &&
+    isTRUE(file.info(object_state_history_path)$size > 0)
+
+  if (history_exists) {
+    history <- utils::read.delim(
+      object_state_history_path,
+      stringsAsFactors = FALSE,
+      check.names = FALSE
+    )
+
+    existing_columns <- names(history)
+    target_columns <- unique(c(names(state), existing_columns))
+
+    for (column in setdiff(target_columns, names(history))) {
+      history[[column]] <- rep(NA, nrow(history))
+    }
+
+    for (column in setdiff(target_columns, names(state))) {
+      state[[column]] <- rep(NA, nrow(state))
+    }
+
+    history <- history[, target_columns, drop = FALSE]
+    state <- state[, target_columns, drop = FALSE]
+
+    if (!identical(existing_columns, target_columns)) {
+      utils::write.table(
+        history,
+        file = object_state_history_path,
+        sep = "\t",
+        quote = FALSE,
+        row.names = FALSE,
+        col.names = TRUE,
+        append = FALSE,
+        na = "NA"
+      )
+    }
+  }
+
+  utils::write.table(
+    state,
+    file = object_state_history_path,
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = !history_exists,
+    append = history_exists,
+    na = "NA"
+  )
+
+  invisible(state)
 }
 
 expression_summary_by_identity <- function(object, genes, layer = "data") {
@@ -627,9 +689,10 @@ pbmc
 #| label: 01-object-checkpoint
 #| echo: false
 
-initial_state <- object_state(
-  pbmc,
-  "after object creation"
+initial_state <- append_object_state(
+  object = pbmc,
+  analysis_stage = "Object creation",
+  checkpoint = "after object creation"
 )
 
 initial_summary <- data.frame(
@@ -651,11 +714,6 @@ initial_summary <- data.frame(
 save_tsv(
   initial_summary,
   "01_object_creation_summary.tsv"
-)
-
-save_tsv(
-  initial_state,
-  "01_object_state.tsv"
 )
 
 if (ncol(pbmc) != 2700 || nrow(pbmc) != 13714) {
@@ -1209,9 +1267,13 @@ pca_loading_summary <- dplyr::bind_rows(
   pca_loading_summary_rows
 )
 
-pca_state <- object_state(
-  pbmc,
-  "after normalization, variable-feature selection, scaling, and PCA"
+pca_state <- append_object_state(
+  object = pbmc,
+  analysis_stage = "PCA",
+  checkpoint = paste(
+    "after normalization, variable-feature selection, scaling,",
+    "and PCA"
+  )
 )
 
 save_tsv(
@@ -1232,11 +1294,6 @@ save_tsv(
 save_tsv(
   pca_loading_summary,
   "06_pca_top_loading_genes.tsv"
-)
-
-save_tsv(
-  pca_state,
-  "06_object_state_after_pca.tsv"
 )
 
 show_table(
@@ -1408,9 +1465,10 @@ cluster_sizes <- data.frame(
 )
 cluster_sizes$percentage_of_cells <- 100 * cluster_sizes$cells / ncol(pbmc)
 
-cluster_state <- object_state(
-  pbmc,
-  "after neighbour graph construction and clustering"
+cluster_state <- append_object_state(
+  object = pbmc,
+  analysis_stage = "Clustering",
+  checkpoint = "after neighbour graph construction and clustering"
 )
 
 save_tsv(
@@ -1425,11 +1483,6 @@ save_tsv(
     stringsAsFactors = FALSE
   ),
   "08_cluster_assignments.tsv"
-)
-
-save_tsv(
-  cluster_state,
-  "08_object_state_after_clustering.tsv"
 )
 
 if (!identical(levels(Idents(pbmc)), as.character(0:8))) {
@@ -1615,9 +1668,10 @@ umap_fingerprint <- umap_fingerprint |>
   ) |>
   dplyr::arrange(as.numeric(cluster))
 
-umap_state <- object_state(
-  pbmc,
-  "after clustering and UMAP"
+umap_state <- append_object_state(
+  object = pbmc,
+  analysis_stage = "UMAP",
+  checkpoint = "after clustering and UMAP"
 )
 
 save_tsv(
@@ -1633,11 +1687,6 @@ save_tsv(
 save_tsv(
   umap_fingerprint,
   "09_umap_cluster_fingerprint.tsv"
-)
-
-save_tsv(
-  umap_state,
-  "09_object_state_after_umap.tsv"
 )
 
 show_table(
@@ -2355,9 +2404,10 @@ final_metadata <- final_metadata |>
     dplyr::everything()
   )
 
-final_state <- object_state(
-  pbmc,
-  "after official cell-type annotation"
+final_state <- append_object_state(
+  object = pbmc,
+  analysis_stage = "Cell-type annotation",
+  checkpoint = "after official cell-type annotation"
 )
 
 save_tsv(
@@ -2368,11 +2418,6 @@ save_tsv(
 save_tsv(
   final_metadata,
   "11_final_cell_metadata.tsv"
-)
-
-save_tsv(
-  final_state,
-  "11_object_state_after_annotation.tsv"
 )
 
 show_table(
@@ -2603,16 +2648,17 @@ save_tsv(
   "12_figure_accessibility_index.tsv"
 )
 
-object_state_history <- dplyr::bind_rows(
-  initial_state,
-  pca_state,
-  umap_state,
-  final_state
-)
+if (!file.exists(object_state_history_path)) {
+  stop(
+    "The consolidated object-state history file was not created.",
+    call. = FALSE
+  )
+}
 
-save_tsv(
-  object_state_history,
-  "12_object_state_history.tsv"
+object_state_history <- utils::read.delim(
+  object_state_history_path,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
 )
 
 output_index <- data.frame(
@@ -2670,16 +2716,11 @@ if (!isTRUE(params$save_rds)) {
     dplyr::filter(!grepl("Seurat object", output))
 }
 
-if (knitr::is_html_output()) {
-  output_index$download <- paste0(
-    "[Open or download](",
-    output_index$relative_path,
-    ")"
-  )
-} else {
-  # relative links do not resolve in a distributed pdf; show the path as text
-  output_index$download <- paste0("`", sub("^\\.\\./", "", output_index$relative_path), "`")
-}
+output_index$download <- paste0(
+  "[Open or download](",
+  output_index$relative_path,
+  ")"
+)
 
 save_tsv(
   output_index |>
@@ -2687,19 +2728,10 @@ save_tsv(
   "00_output_index.tsv"
 )
 
-index_display <- output_index |>
-  dplyr::select(output, download)
-if (knitr::is_html_output()) {
-  index_caption <- "Key downloadable outputs"
-} else {
-  # in the pdf the column holds a path, not a link
-  names(index_display)[names(index_display) == "download"] <- "stored in"
-  index_caption <- "Key output files"
-}
-
 show_table(
-  index_display,
-  index_caption,
+  output_index |>
+    dplyr::select(output, download),
+  "Key downloadable outputs",
   digits = 0,
   escape = FALSE
 )
@@ -2718,8 +2750,8 @@ show_table(
 )
 ```
 
-Note: the paths above are relative to the rendered document and are clickable in
-the html report. The complete output directory is **`r output_dir`**.
+Note: the clickable paths above are relative to the rendered document. The
+complete output directory is **`r output_dir`**.
 
 ## Session information
 
@@ -2758,16 +2790,13 @@ accessible adaptation from silently becoming a different analysis.
 
 # Accessibility validation
 
-Quarto's built-in axe accessibility engine runs in the browser and appends its
-findings to the end of the page. It is off by default and turned on when the
-report is served with `--metadata-file axe.yml`; the `snakemake preview` rule
-does this. Serve the report over http and open it in a browser to see the
-findings, for example:
+This report enables Quarto's built-in axe accessibility engine
+(`axe: output: document`), which runs in the browser and appends its findings to
+the end of the page. Serve the report and open it in a browser to see them, for
+example:
 
 ```bash
-snakemake preview --use-conda
-# or directly:
-quarto preview reports/pbmc3k_acc.qmd --metadata-file reports/axe.yml
+quarto preview reports/pbmc3k_acc.qmd
 ```
 
 The scan runs over the whole page, so inline tables are kept short and the full
