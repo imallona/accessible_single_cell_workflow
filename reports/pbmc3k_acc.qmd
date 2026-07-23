@@ -14,8 +14,41 @@ format:
     df-print: kable
     fig-cap-location: bottom
     tbl-cap-location: top
-    axe:
-      output: document
+  typst:
+    # typst is bundled with quarto and auto-tags the pdf, so no LaTeX is needed.
+    # ua-1 is PDF/UA-1 (accessibility), which requires tagging. typst renders one
+    # substandard at a time, so archival PDF/A (a-2b) cannot be combined here;
+    # accessibility is the goal, so ua-1 wins. ua-1 is the typst spelling; the
+    # LaTeX path uses ua-2. Validate with veraPDF: run `quarto install verapdf`
+    # once, then quarto checks each render.
+    pdf-standard: ua-1
+    # Disable hyphenation everywhere, including the title. A word split at a line
+    # break ("tuto-rial") is read as two fragments by a screen reader.
+    include-in-header:
+      text: |
+        #set text(hyphenate: false)
+        // Footer reads "page 1", "page 2", ... A numbering pattern string cannot
+        // hold the literal word "page" (the letter "a" is a counter symbol), so
+        // the spoken "page" prefix is added in a custom footer. quarto's
+        // page-numbering below still drives the page counter and the TOC.
+        #set page(footer: context align(center)[page #counter(page).display("1")])
+    page-numbering: "1"
+    toc: true
+    toc-depth: 3
+    section-numbering: "1.1.1"
+    df-print: kable
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    # Rasterise figures for the pdf. Heatmaps have thousands of cells that alias
+    # into a blurry mess as svg; png at 300 dpi stays crisp.
+    fig-format: png
+    fig-dpi: 300
+
+# Screen-reader-only "start code"/"end code"/"start output"/"end output"
+# boundaries around every executed code cell and its output. Hidden in HTML,
+# tiny near-invisible text in the pdf. See reports/sr_markers.lua.
+filters:
+  - sr_markers.lua
 
 execute:
   echo: true
@@ -33,7 +66,7 @@ params:
   save_rds: true
 ---
 
-# Purpose and tutorial 
+# Purpose and tutorial
 
 This vignette reproduces the analytical sequence, marker examples, cell-type
 mapping, and displayed plot families of the current official Seurat PBMC 3k
@@ -140,6 +173,7 @@ required_packages <- c(
   "Seurat",
   "dplyr",
   "ggplot2",
+  "ggrepel",
   "patchwork",
   "Matrix",
   "knitr"
@@ -162,6 +196,7 @@ suppressPackageStartupMessages({
   library(Seurat)
   library(dplyr)
   library(ggplot2)
+  library(ggrepel)
   library(patchwork)
   library(Matrix)
   library(knitr)
@@ -182,6 +217,9 @@ options(
   width = 80
 )
 Sys.setenv(NO_COLOR = "1")
+
+# Shared low-vision figure theme, palette, and helpers.
+source("accessible_theme.R")
 
 # ---------------------------------------------------------------------------
 # Interactive fallback for `params`.
@@ -269,31 +307,22 @@ object_state_history_path <- file.path(
   "12_object_state_history.tsv"
 )
 
-legacy_object_state_paths <- file.path(
-  table_dir,
-  c(
-    "01_object_state.tsv",
-    "06_object_state_after_pca.tsv",
-    "08_object_state_after_clustering.tsv",
-    "09_object_state_after_umap.tsv",
-    "11_object_state_after_annotation.tsv"
-  )
-)
-
-object_state_run_started_at <- Sys.time()
-object_state_run_id <- paste(
-  params$project_id,
-  format(
-    object_state_run_started_at,
-    format = "%Y%m%dT%H%M%SZ",
-    tz = "UTC"
-  ),
-  paste0("pid", Sys.getpid()),
-  sep = "_"
-)
-
+# Start each render clean: delete the previous history file and the old
+# per-stage state files it replaced, then append one row per checkpoint.
 unlink(
-  legacy_object_state_paths,
+  c(
+    object_state_history_path,
+    file.path(
+      table_dir,
+      c(
+        "01_object_state.tsv",
+        "06_object_state_after_pca.tsv",
+        "08_object_state_after_clustering.tsv",
+        "09_object_state_after_umap.tsv",
+        "11_object_state_after_annotation.tsv"
+      )
+    )
+  ),
   force = TRUE
 )
 
@@ -353,13 +382,26 @@ show_table <- function(
   )
 
   if (!is.null(link_label) && !is.null(link_path)) {
+    if (knitr::is_html_output()) {
+      link_text <- paste0("[", link_label, "](", link_path, ")")
+    } else {
+      # a relative file link does not resolve in a distributed pdf, so name the
+      # file and show its path. "download" makes no sense on a page, so the label
+      # switches to "Find".
+      label <- sub("^Download\\b", "Find", link_label)
+      link_text <- paste0(label, ": `", sub("^\\.\\./", "", link_path), "`")
+    }
+    table_text <- paste0(table_text, "\n\n", link_text)
+  }
+
+  # wide tables overlap their columns in the fixed-width pdf. turn the typst page
+  # landscape and shrink the text so the columns fit. the tag tree keeps the
+  # reading order, so a screen reader is unaffected by the rotation.
+  if (identical(knitr::pandoc_to(), "typst") && ncol(x) >= 8) {
     table_text <- paste0(
+      "```{=typst}\n#page(flipped: true, margin: 1cm)[\n#set text(size: 8pt)\n```\n\n",
       table_text,
-      "\n\n[",
-      link_label,
-      "](",
-      link_path,
-      ")"
+      "\n\n```{=typst}\n]\n```"
     )
   }
 
@@ -442,17 +484,6 @@ object_state <- function(object, analysis_stage, checkpoint) {
   identity_levels <- levels(Idents(object))
 
   data.frame(
-    run_id = object_state_run_id,
-    run_started_at_utc = format(
-      object_state_run_started_at,
-      format = "%Y-%m-%dT%H:%M:%SZ",
-      tz = "UTC"
-    ),
-    recorded_at_utc = format(
-      Sys.time(),
-      format = "%Y-%m-%dT%H:%M:%SZ",
-      tz = "UTC"
-    ),
     analysis_stage = analysis_stage,
     checkpoint = checkpoint,
     cells = ncol(object),
@@ -477,50 +508,11 @@ object_state <- function(object, analysis_stage, checkpoint) {
 }
 
 append_object_state <- function(object, analysis_stage, checkpoint) {
-  state <- object_state(
-    object = object,
-    analysis_stage = analysis_stage,
-    checkpoint = checkpoint
-  )
+  state <- object_state(object, analysis_stage, checkpoint)
 
-  history_exists <- file.exists(object_state_history_path) &&
-    isTRUE(file.info(object_state_history_path)$size > 0)
-
-  if (history_exists) {
-    history <- utils::read.delim(
-      object_state_history_path,
-      stringsAsFactors = FALSE,
-      check.names = FALSE
-    )
-
-    existing_columns <- names(history)
-    target_columns <- unique(c(names(state), existing_columns))
-
-    for (column in setdiff(target_columns, names(history))) {
-      history[[column]] <- rep(NA, nrow(history))
-    }
-
-    for (column in setdiff(target_columns, names(state))) {
-      state[[column]] <- rep(NA, nrow(state))
-    }
-
-    history <- history[, target_columns, drop = FALSE]
-    state <- state[, target_columns, drop = FALSE]
-
-    if (!identical(existing_columns, target_columns)) {
-      utils::write.table(
-        history,
-        file = object_state_history_path,
-        sep = "\t",
-        quote = FALSE,
-        row.names = FALSE,
-        col.names = TRUE,
-        append = FALSE,
-        na = "NA"
-      )
-    }
-  }
-
+  # The history file is deleted at the start of the run, so the first call
+  # writes the header and each later call appends one row.
+  history_exists <- file.exists(object_state_history_path)
   utils::write.table(
     state,
     file = object_state_history_path,
@@ -933,11 +925,33 @@ criterion will normally be zero in this exact workflow.
 #| fig-width: 13
 #| fig-height: 7
 
-qc_violin_plot <- VlnPlot(
-  pbmc,
-  features = c("nFeature_RNA", "nCount_RNA", "percent.mt"),
-  ncol = 3
+# One panel per metric: title is a plain name, y axis the exact table metric,
+# x axis the cell set. The single QC group makes identity ticks uninformative,
+# so they are hidden.
+qc_violin_metrics <- list(
+  nFeature_RNA = "Detected genes",
+  nCount_RNA = "Total UMIs",
+  percent.mt = "Mitochondrial percentage"
 )
+
+qc_violin_panels <- lapply(
+  names(qc_violin_metrics),
+  function(metric) {
+    VlnPlot(pbmc, features = metric, cols = accessible_category_palette) +
+      ggtitle(qc_violin_metrics[[metric]]) +
+      xlab("all cells (before filtering)") +
+      ylab(metric)
+  }
+)
+
+qc_violin_plot <- style_figure(
+  patchwork::wrap_plots(qc_violin_panels, ncol = 3),
+  legend = FALSE
+) &
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank()
+  )
 
 emit_and_save_plot(
   qc_violin_plot,
@@ -951,28 +965,35 @@ emit_and_save_plot(
 #| label: fig-02-qc-scatter
 #| fig-cap: "Relationships among QC metrics before filtering, matching the official PBMC 3k tutorial."
 #| fig-alt: "The first scatter plot compares total UMI count with mitochondrial percentage. The second compares total UMI count with detected genes. The adjacent table gives the exact filtering thresholds and numbers of cells removed."
-#| fig-width: 13
-#| fig-height: 7
+#| fig-width: 12
+#| fig-height: 6
 
 plot1 <- FeatureScatter(
   pbmc,
   feature1 = "nCount_RNA",
-  feature2 = "percent.mt"
+  feature2 = "percent.mt",
+  cols = accessible_category_palette[1]
 )
 
 plot2 <- FeatureScatter(
   pbmc,
   feature1 = "nCount_RNA",
-  feature2 = "nFeature_RNA"
+  feature2 = "nFeature_RNA",
+  cols = accessible_category_palette[1]
 )
 
-qc_scatter_plot <- plot1 + plot2
+# FeatureScatter puts the Pearson correlation in the title as a bare number.
+# Spell out what it is.
+plot1 <- plot1 + ggtitle(paste0("Pearson r = ", plot1$labels$title))
+plot2 <- plot2 + ggtitle(paste0("Pearson r = ", plot2$labels$title))
+
+qc_scatter_plot <- style_figure(plot1 + plot2, square = TRUE, legend = FALSE)
 
 emit_and_save_plot(
   qc_scatter_plot,
   filename = "02_qc_scatter",
-  width = 13,
-  height = 7
+  width = 12,
+  height = 6
 )
 ```
 
@@ -1050,7 +1071,7 @@ save_tsv(
 
 show_table(
   qc_before_after,
-  "QC distributions before and after filtering",
+  "QC distributions before and after filtering, for nFeature_RNA (detected genes), nCount_RNA (total UMIs), and percent.mt (mitochondrial percentage)",
   digits = 2,
   link_label = "Download the complete before-and-after QC table",
   link_path = path_for_link("tables", "02_qc_distribution_before_after.tsv")
@@ -1140,8 +1161,8 @@ show_table(
 #| label: fig-04-variable-features
 #| fig-cap: "Variable-feature plots with and without labels, matching the official tutorial."
 #| fig-alt: "Two scatter plots compare mean expression with standardized variance. The left plot highlights the selected variable genes. The right plot additionally labels the ten highest-ranked genes, which are also listed in the adjacent table."
-#| fig-width: 10
-#| fig-height: 5
+#| fig-width: 12
+#| fig-height: 6
 
 plot1 <- VariableFeaturePlot(pbmc)
 plot2 <- LabelPoints(
@@ -1149,13 +1170,13 @@ plot2 <- LabelPoints(
   points = top10,
   repel = TRUE
 )
-variable_feature_plot <- plot1 + plot2
+variable_feature_plot <- style_figure(plot1 + plot2, square = TRUE)
 
 emit_and_save_plot(
   variable_feature_plot,
   filename = "04_variable_features",
-  width = 10,
-  height = 5
+  width = 12,
+  height = 6
 )
 ```
 
@@ -1312,10 +1333,18 @@ show_table(
 #| fig-width: 10
 #| fig-height: 8
 
-pca_loading_plot <- VizDimLoadings(
+pca_loading_panels <- VizDimLoadings(
   pbmc,
   dims = 1:2,
-  reduction = "pca"
+  reduction = "pca",
+  combine = FALSE
+)
+pca_loading_panels[[1]] <- pca_loading_panels[[1]] +
+  xlab("Principal component 1 (PC1)")
+pca_loading_panels[[2]] <- pca_loading_panels[[2]] +
+  xlab("Principal component 2 (PC2)")
+pca_loading_plot <- style_figure(
+  patchwork::wrap_plots(pca_loading_panels, ncol = 2)
 )
 
 emit_and_save_plot(
@@ -1330,18 +1359,22 @@ emit_and_save_plot(
 #| label: fig-06-pca-scatter
 #| fig-cap: "Cells projected onto principal components 1 and 2."
 #| fig-alt: "Each point is one cell positioned by PC1 and PC2 before clustering. Exact coordinates for every computed principal component are available in the PCA embedding table."
-#| fig-width: 10
+#| fig-width: 8
 #| fig-height: 8
 
 pca_scatter_plot <- DimPlot(
   pbmc,
-  reduction = "pca"
-) + NoLegend()
+  reduction = "pca",
+  cols = accessible_category_palette[1]
+) +
+  xlab("PC 1") +
+  ylab("PC 2")
+pca_scatter_plot <- style_figure(pca_scatter_plot, square = TRUE, legend = FALSE)
 
 emit_and_save_plot(
   pca_scatter_plot,
   filename = "06_pca_scatter",
-  width = 10,
+  width = 8,
   height = 8
 )
 ```
@@ -1353,8 +1386,8 @@ heatmap shows PC1 alone; the second reproduces the official 15-PC overview.
 #| label: fig-06-pca-heatmap-pc1
 #| fig-cap: "Expression heatmap for principal component 1."
 #| fig-alt: "A heatmap shows genes and extreme cells associated with positive and negative PC1 scores. The exact PC1 gene loadings are available in the PCA loading table."
-#| fig-width: 9
-#| fig-height: 6
+#| fig-width: 8
+#| fig-height: 11
 
 pca_heatmap_pc1 <- DimHeatmap(
   pbmc,
@@ -1362,13 +1395,21 @@ pca_heatmap_pc1 <- DimHeatmap(
   cells = 500,
   balanced = TRUE,
   fast = FALSE
-)
+) &
+  scale_fill_gradientn(
+    colours = accessible_diverging_colours,
+    na.value = "white",
+    name = "Scaled expression",
+    limits = c(-2.5, 2.5),
+    oob = scales::squish
+  )
+pca_heatmap_pc1 <- style_heatmap(pca_heatmap_pc1)
 
 emit_and_save_plot(
   pca_heatmap_pc1,
   filename = "06_pca_heatmap_pc1",
-  width = 9,
-  height = 6
+  width = 8,
+  height = 11
 )
 ```
 
@@ -1377,7 +1418,7 @@ emit_and_save_plot(
 #| fig-cap: "Expression heatmaps for principal components 1 through 15."
 #| fig-alt: "Fifteen heatmap panels show genes and selected cells associated with positive and negative scores for PCs 1 through 15. The adjacent loading table is the primary nonvisual source."
 #| fig-width: 9
-#| fig-height: 15
+#| fig-height: 20
 
 pca_heatmap_pc1_pc15 <- DimHeatmap(
   pbmc,
@@ -1385,13 +1426,22 @@ pca_heatmap_pc1_pc15 <- DimHeatmap(
   cells = 500,
   balanced = TRUE,
   fast = FALSE
-)
+) &
+  scale_fill_gradientn(
+    colours = accessible_diverging_colours,
+    na.value = "white",
+    name = "Scaled expression",
+    limits = c(-2.5, 2.5),
+    oob = scales::squish
+  )
+pca_heatmap_pc1_pc15 <- style_heatmap(pca_heatmap_pc1_pc15) +
+  patchwork::plot_layout(guides = "collect")
 
 emit_and_save_plot(
   pca_heatmap_pc1_pc15,
   filename = "06_pca_heatmap_pc1_pc15",
   width = 9,
-  height = 15
+  height = 20
 )
 ```
 
@@ -1405,16 +1455,16 @@ plot, and uses PCs 1 through 10 for the remaining workflow.
 #| label: fig-07-pca-elbow
 #| fig-cap: "Principal-component standard deviations used to select ten PCs."
 #| fig-alt: "The elbow plot shows progressively decreasing standard deviation across principal components. The official tutorial selects PCs 1 through 10; exact standard deviations and cumulative percentages are provided in the adjacent table."
-#| fig-width: 10
-#| fig-height: 6
+#| fig-width: 8
+#| fig-height: 8
 
-pca_elbow_plot <- ElbowPlot(pbmc)
+pca_elbow_plot <- style_figure(ElbowPlot(pbmc), square = TRUE)
 
 emit_and_save_plot(
   pca_elbow_plot,
   filename = "07_pca_elbow",
-  width = 10,
-  height = 6
+  width = 8,
+  height = 8
 )
 ```
 
@@ -1721,8 +1771,13 @@ validation.
 
 umap_cluster_plot <- DimPlot(
   pbmc,
-  reduction = "umap"
-)
+  reduction = "umap",
+  cols = accessible_category_palette
+) +
+  xlab("UMAP 1") +
+  ylab("UMAP 2") +
+  guides(colour = guide_legend(title = "Cluster", override.aes = list(size = 5)))
+umap_cluster_plot <- style_figure(umap_cluster_plot, square = TRUE)
 
 emit_and_save_plot(
   umap_cluster_plot,
@@ -2000,8 +2055,12 @@ save_tsv(
 
 marker_violin_normalized <- VlnPlot(
   pbmc,
-  features = c("MS4A1", "CD79A")
+  features = c("MS4A1", "CD79A"),
+  cols = accessible_category_palette
 )
+marker_violin_normalized <- style_figure(marker_violin_normalized, legend = FALSE) &
+  ylab("normalized expression") &
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 emit_and_save_plot(
   marker_violin_normalized,
@@ -2018,7 +2077,7 @@ emit_and_save_plot(
 show_table(
   normalized_marker_expression |>
     dplyr::filter(gene %in% c("MS4A1", "CD79A")),
-  "Numerical equivalent of the normalized MS4A1 and CD79A violin plots",
+  "Numerical equivalent of the normalized MS4A1 and CD79A violin plots (normalized expression, RNA data layer)",
   digits = 3,
   link_label = "Download normalized marker expression for all tutorial genes",
   link_path = path_for_link(
@@ -2039,8 +2098,12 @@ marker_violin_counts <- VlnPlot(
   pbmc,
   features = c("NKG7", "PF4"),
   layer = "counts",
-  log = TRUE
+  log = TRUE,
+  cols = accessible_category_palette
 )
+marker_violin_counts <- style_figure(marker_violin_counts, legend = FALSE) &
+  ylab("raw UMI counts") &
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 
 emit_and_save_plot(
   marker_violin_counts,
@@ -2056,7 +2119,7 @@ emit_and_save_plot(
 
 show_table(
   raw_marker_expression,
-  "Numerical equivalent of the raw-count NKG7 and PF4 violin plots",
+  "Numerical equivalent of the raw-count NKG7 and PF4 violin plots (raw UMI counts)",
   digits = 3,
   link_label = "Download the raw-count marker-expression table",
   link_path = path_for_link(
@@ -2070,8 +2133,8 @@ show_table(
 #| label: fig-10-marker-featureplots
 #| fig-cap: "Canonical PBMC marker expression on the UMAP."
 #| fig-alt: "Nine UMAP panels show MS4A1, GNLY, CD3E, CD14, FCER1A, FCGR3A, LYZ, PPBP, and CD8A expression. A nearby table identifies the cluster with the highest average expression and reports its detection percentage for each gene."
-#| fig-width: 10
-#| fig-height: 8
+#| fig-width: 12
+#| fig-height: 12
 
 marker_feature_plot <- FeaturePlot(
   pbmc,
@@ -2085,14 +2148,17 @@ marker_feature_plot <- FeaturePlot(
     "LYZ",
     "PPBP",
     "CD8A"
-  )
+  ),
+  cols = accessible_sequential_colours
 )
+marker_feature_plot <- style_figure(marker_feature_plot, square = TRUE) &
+  labs(colour = "Normalized\nexpression")
 
 emit_and_save_plot(
   marker_feature_plot,
   filename = "10_marker_featureplots",
-  width = 10,
-  height = 8
+  width = 12,
+  height = 12
 )
 ```
 
@@ -2122,7 +2188,7 @@ feature_plot_peak_clusters <- normalized_marker_expression |>
 
 show_table(
   feature_plot_peak_clusters,
-  "Highest-average cluster for every marker shown in the FeaturePlot figure",
+  "Highest-average cluster for every marker shown in the FeaturePlot figure (normalized expression)",
   digits = 3,
   link_label = "Download the complete normalized marker-expression table",
   link_path = path_for_link(
@@ -2149,19 +2215,31 @@ pbmc.markers |>
 #| label: fig-10-marker-heatmap
 #| fig-cap: "Top positive marker genes for every cluster."
 #| fig-alt: "A heatmap displays up to ten positive markers with average log2 fold change above 1 for each cluster. The exact gene list, fold changes, detection fractions, and adjusted p-values are provided in the marker table."
-#| fig-width: 10
-#| fig-height: 8
+#| fig-width: 9
+#| fig-height: 13
 
+# Drop the cramped in-plot cluster labels; the colour bar, legend, and marker
+# table carry the identities.
 marker_heatmap <- DoHeatmap(
   pbmc,
-  features = top10$gene
-) + NoLegend()
+  features = top10$gene,
+  group.colors = accessible_category_palette,
+  label = FALSE
+) +
+  scale_fill_gradientn(
+    colours = accessible_diverging_colours,
+    na.value = "white",
+    name = "Scaled expression (z-score)"
+  ) +
+  labs(colour = "Cell type") +
+  theme(legend.key.size = ggplot2::unit(0.8, "cm"))
+marker_heatmap <- style_heatmap(marker_heatmap)
 
 emit_and_save_plot(
   marker_heatmap,
   filename = "10_marker_heatmap",
-  width = 10,
-  height = 8
+  width = 9,
+  height = 13
 )
 ```
 
@@ -2345,22 +2423,22 @@ pbmc$celltype <- as.character(Idents(pbmc))
 ```{r}
 #| label: fig-11-umap-celltypes
 #| fig-cap: "UMAP labelled with the official PBMC 3k cell types."
-#| fig-alt: "Cells are coloured and labelled as Naive CD4 T, CD14 positive monocytes, Memory CD4 T, B cells, CD8 T, FCGR3A positive monocytes, NK, dendritic cells, or platelets. The adjacent table gives cell counts and canonical marker evidence for every label."
+#| fig-alt: "Cells are coloured and labelled as Naive CD4 T, CD14 positive monocytes, Memory CD4 T, B cells, CD8 T, FCGR3A positive monocytes, NK, dendritic cells, or platelets. Each cell-type name sits in a white boxed label at its cluster centroid. The adjacent table gives cell counts and canonical marker evidence for every label."
 #| fig-width: 9
-#| fig-height: 5
+#| fig-height: 9
 
-labelled_umap_plot <- DimPlot(
-  pbmc,
-  reduction = "umap",
-  label = TRUE,
-  pt.size = 0.5
-) + NoLegend()
+labelled_umap_plot <- accessible_labelled_umap(pbmc)
+labelled_umap_plot <- style_figure(
+  labelled_umap_plot,
+  square = TRUE,
+  legend = FALSE
+)
 
 emit_and_save_plot(
   labelled_umap_plot,
   filename = "11_umap_celltypes",
   width = 9,
-  height = 5
+  height = 9
 )
 ```
 
@@ -2437,29 +2515,14 @@ figure to the rendered teaching sequence.
 #| label: 11-save-styled-umap
 #| echo: false
 
-plot <- DimPlot(
-  pbmc,
-  reduction = "umap",
-  label = TRUE,
-  label.size = 4.5
-) +
-  xlab("UMAP 1") +
-  ylab("UMAP 2") +
-  theme(
-    axis.title = element_text(size = 18),
-    legend.text = element_text(size = 18)
-  ) +
-  guides(
-    colour = guide_legend(
-      override.aes = list(size = 10)
-    )
-  )
+plot <- accessible_labelled_umap(pbmc, point_size = 0.5, label_size = 6)
+plot <- style_figure(plot, square = TRUE, legend = FALSE)
 
 save_plot_without_display(
   plot,
   filename = "11_pbmc3k_umap_styled",
-  width = 12,
-  height = 7
+  width = 10,
+  height = 10
 )
 
 ggplot2::ggsave(
@@ -2468,8 +2531,8 @@ ggplot2::ggsave(
     "11_pbmc3k_umap_styled.jpg"
   ),
   plot = plot,
-  width = 12,
-  height = 7,
+  width = 10,
+  height = 10,
   units = "in",
   dpi = params$figure_dpi,
   quality = 50,
@@ -2716,11 +2779,16 @@ if (!isTRUE(params$save_rds)) {
     dplyr::filter(!grepl("Seurat object", output))
 }
 
-output_index$download <- paste0(
-  "[Open or download](",
-  output_index$relative_path,
-  ")"
-)
+if (knitr::is_html_output()) {
+  output_index$download <- paste0(
+    "[Open or download](",
+    output_index$relative_path,
+    ")"
+  )
+} else {
+  # relative links do not resolve in a distributed pdf; show the path as text
+  output_index$download <- paste0("`", sub("^\\.\\./", "", output_index$relative_path), "`")
+}
 
 save_tsv(
   output_index |>
@@ -2728,10 +2796,19 @@ save_tsv(
   "00_output_index.tsv"
 )
 
+index_display <- output_index |>
+  dplyr::select(output, download)
+if (knitr::is_html_output()) {
+  index_caption <- "Key downloadable outputs"
+} else {
+  # in the pdf the column holds a path, not a link
+  names(index_display)[names(index_display) == "download"] <- "stored in"
+  index_caption <- "Key output files"
+}
+
 show_table(
-  output_index |>
-    dplyr::select(output, download),
-  "Key downloadable outputs",
+  index_display,
+  index_caption,
   digits = 0,
   escape = FALSE
 )
@@ -2750,8 +2827,8 @@ show_table(
 )
 ```
 
-Note: the clickable paths above are relative to the rendered document. The
-complete output directory is **`r output_dir`**.
+Note: the paths above are relative to the rendered document and are clickable in
+the html report. The complete output directory is **`r output_dir`**.
 
 ## Session information
 
@@ -2790,13 +2867,16 @@ accessible adaptation from silently becoming a different analysis.
 
 # Accessibility validation
 
-This report enables Quarto's built-in axe accessibility engine
-(`axe: output: document`), which runs in the browser and appends its findings to
-the end of the page. Serve the report and open it in a browser to see them, for
-example:
+Quarto's built-in axe accessibility engine runs in the browser and appends its
+findings to the end of the page. It is off by default and turned on when the
+report is served with `--metadata-file axe.yml`; the `snakemake preview` rule
+does this. Serve the report over http and open it in a browser to see the
+findings, for example:
 
 ```bash
-quarto preview reports/pbmc3k_acc.qmd
+snakemake preview --use-conda
+# or directly:
+quarto preview reports/pbmc3k_acc.qmd --metadata-file reports/axe.yml
 ```
 
 The scan runs over the whole page, so inline tables are kept short and the full

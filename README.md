@@ -1,4 +1,6 @@
-# pbmc3k workflow
+# Accessible PBMC 3k workflow
+
+An accessible single-cell workflow: the Seurat PBMC 3k guided-clustering tutorial rebuilt for blind and low-vision readers. It renders a screen-reader-first HTML report and a tagged PDF/UA-1 PDF, pairs every plot with a numeric table, and tunes the figures for low vision.
 
 ## Aim
 
@@ -58,6 +60,7 @@ Some style choices in this report are there for accessibility.
 - Link colour. `reports/custom.scss` sets links to a dark blue (about 7:1 on white), high contrast.
 - Wrapped output. Long code output and messages are wrapped instead of put in a horizontal scroll boxes. A scroll box needs a mouse to reach, and a screen reader gives no sign that content continues off-screen.
 - No hyphenation in the pdf. `#set text(hyphenate: false)` keeps words whole; a word split at a line break ("tuto-rial") reads as two fragments to a screen reader.
+- Low-vision figures. `reports/accessible_theme.R` gives every figure large fonts, axes labelled with units, and a colourblind-safe high-contrast palette. Scatter and UMAP panels are square, heatmaps are taller than wide with a scaled-expression legend, and cell-type names sit in white boxed labels at the cluster centroids instead of small text on the points. Each figure's units also appear in its companion table.
 - Named table columns. The tables carry the row identifier, a cell or a gene, in a named column. A data frame printed with row names leaves the first header blank, which a screen reader reads as an unlabelled column.
 - Long tables are avoided.
 - Clean render logs. `scripts/clean_log.sh` strips ANSI colour codes and the carriage-return progress bars that redraw in place, keeping the chunk counters, messages, and warnings. The render rules `tee` the cleaned stream to both the console and the log file, and `snakemake preview` streams it live. The bars are the repeated asterisks and equals signs that clutter a log read by a screen reader.

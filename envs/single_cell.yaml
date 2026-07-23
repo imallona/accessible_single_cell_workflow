@@ -11,4 +11,5 @@ dependencies:
   - r-knitr=1.51
   - r-dplyr
   - r-ggplot2
+  - r-ggrepel
   - r-patchwork
